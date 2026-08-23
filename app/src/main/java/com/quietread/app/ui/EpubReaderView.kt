@@ -1,0 +1,587 @@
+package com.quietread.app.ui
+
+import android.annotation.SuppressLint
+import android.graphics.Color
+import android.net.Uri
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import com.quietread.app.data.ReaderSettings
+import com.quietread.app.data.ReaderTheme
+import com.quietread.app.data.ReadingPosition
+import com.quietread.app.epub.EpubPackage
+import org.jsoup.Jsoup
+import org.jsoup.nodes.DataNode
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.net.URI
+import kotlin.math.floor
+
+data class ReaderRenderState(
+    val spineIndex: Int,
+    val page: Int,
+    val pageCount: Int,
+    val overallProgress: Float,
+)
+
+class ReaderController(
+    private val epub: EpubPackage,
+    private val initialSpineIndex: Int,
+    private val initialSpineProgress: Float,
+) {
+    private var webView: WebView? = null
+    private var settings = ReaderSettings()
+    private var spineIndex = initialSpineIndex.coerceIn(epub.spine.indices)
+    private var page = 0
+    private var pageCount = 1
+    private var pendingProgress = initialSpineProgress.coerceIn(0f, 1f)
+    private var pendingFragment: String? = null
+
+    var onStateChanged: (ReaderRenderState) -> Unit = {}
+    var onCenterTap: () -> Unit = {}
+    var onFootnoteOpened: () -> Unit = {}
+    var onPositionChanged: (ReadingPosition) -> Unit = {}
+
+    @SuppressLint("SetJavaScriptEnabled")
+    fun createWebView(context: android.content.Context): WebView = WebView(context).also { view ->
+        webView = view
+        view.setBackgroundColor(Color.TRANSPARENT)
+        view.settings.apply {
+            javaScriptEnabled = true
+            javaScriptCanOpenWindowsAutomatically = false
+            domStorageEnabled = false
+            allowContentAccess = false
+            allowFileAccess = true
+            blockNetworkLoads = true
+            builtInZoomControls = false
+            displayZoomControls = false
+            setSupportZoom(false)
+            mediaPlaybackRequiresUserGesture = true
+        }
+        view.isHorizontalScrollBarEnabled = false
+        view.isVerticalScrollBarEnabled = false
+        view.overScrollMode = WebView.OVER_SCROLL_NEVER
+        view.addJavascriptInterface(Bridge(view), "QuietRead")
+        view.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val scheme = request?.url?.scheme?.lowercase()
+                return if (scheme == "http" || scheme == "https") {
+                    WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                } else null
+            }
+        }
+        loadCurrentChapter()
+    }
+
+    fun updateSettings(newSettings: ReaderSettings) {
+        if (newSettings == settings) return
+        settings = newSettings
+        pendingProgress = currentSpineProgress()
+        pendingFragment = null
+        loadCurrentChapter()
+    }
+
+    fun nextPage() {
+        if (page + 1 < pageCount) {
+            evaluate("window.qrGoPage(${page + 1});")
+        } else if (spineIndex + 1 < epub.spine.size) {
+            emitPosition(1f)
+            loadChapter(spineIndex + 1, 0f)
+        }
+    }
+
+    fun previousPage() {
+        if (page > 0) {
+            evaluate("window.qrGoPage(${page - 1});")
+        } else if (spineIndex > 0) {
+            loadChapter(spineIndex - 1, 1f)
+        }
+    }
+
+    fun goTo(spine: Int, progress: Float = 0f, fragment: String? = null) {
+        loadChapter(spine.coerceIn(epub.spine.indices), progress, fragment)
+    }
+
+    fun goToOverall(progress: Float) {
+        val target = progress.coerceIn(0f, 0.999999f) * totalWeight()
+        var consumed = 0L
+        epub.spine.forEachIndexed { index, item ->
+            val weight = item.file.length().coerceAtLeast(1L)
+            if (target < consumed + weight || index == epub.spine.lastIndex) {
+                val local = ((target - consumed) / weight.toFloat()).coerceIn(0f, 1f)
+                loadChapter(index, local)
+                return
+            }
+            consumed += weight
+        }
+    }
+
+    fun destroy() {
+        webView?.apply {
+            removeJavascriptInterface("QuietRead")
+            stopLoading()
+            destroy()
+        }
+        webView = null
+    }
+
+    private fun loadChapter(index: Int, progress: Float, fragment: String? = null) {
+        spineIndex = index
+        page = 0
+        pageCount = 1
+        pendingProgress = progress.coerceIn(0f, 1f)
+        pendingFragment = fragment
+        loadCurrentChapter()
+    }
+
+    private fun loadCurrentChapter() {
+        val view = webView ?: return
+        val chapter = epub.spine[spineIndex].file
+        val base = (chapter.parentFile ?: chapter).toURI().toString()
+        val html = sanitizeAndPrepare(chapter, base, settings)
+        view.loadDataWithBaseURL(base, html, "text/html", "UTF-8", null)
+    }
+
+    private fun sanitizeAndPrepare(file: File, base: String, settings: ReaderSettings): String {
+        val document = Jsoup.parse(file, null, base)
+        document.select("script, iframe, frame, object, embed, form, input, button, textarea, audio, video").remove()
+        document.allElements.forEach { element ->
+            element.attributes().asList()
+                .filter { it.key.startsWith("on", ignoreCase = true) }
+                .forEach { element.removeAttr(it.key) }
+        }
+        document.select("[src], [href]").forEach { element ->
+            listOf("src", "href").forEach { attribute ->
+                val value = element.attr(attribute).trim().lowercase()
+                if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("javascript:")) {
+                    element.removeAttr(attribute)
+                }
+            }
+        }
+
+        val dark = settings.theme == ReaderTheme.DARK
+        val background = if (dark) "#171916" else "#f5f1e8"
+        val foreground = if (dark) "#e4e5de" else "#252722"
+        val muted = if (dark) "#a9ada5" else "#65685f"
+        val fontPercent = (settings.fontScale * 100).toInt()
+        document.head().prependElement("meta")
+            .attr("http-equiv", "Content-Security-Policy")
+            .attr(
+                "content",
+                "default-src 'none'; img-src file: data:; style-src file: 'unsafe-inline'; font-src file: data:; script-src 'unsafe-inline'",
+            )
+        document.head().appendElement("meta").attr("name", "viewport")
+            .attr("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no")
+        document.head().appendElement("style").appendText(
+            """
+            :root { color-scheme: ${if (dark) "dark" else "light"}; }
+            html {
+              width: 100% !important; height: 100% !important;
+              margin: 0 !important; padding: 0 !important;
+              overflow: hidden !important; background: $background !important;
+            }
+            body {
+              box-sizing: border-box !important;
+              width: 100% !important; height: 100% !important;
+              margin: 0 !important; padding: 16px 20px !important;
+              overflow: visible !important; column-fill: auto !important;
+              background: $background !important; color: $foreground !important;
+              font-size: $fontPercent% !important; line-height: 1.75 !important;
+              overflow-wrap: break-word;
+            }
+            body * { max-width: 100% !important; }
+            img, svg { max-height: calc(var(--qr-page-height, 100vh) - 64px) !important; object-fit: contain; }
+            a { color: $foreground !important; text-decoration-color: $muted !important; }
+            p { margin-block: 0.55em; }
+            .footnote-content,
+            [role="doc-footnote"],
+            [epub\:type~="footnote"] { display: none !important; }
+            #quietread-footnote-overlay {
+              position: fixed !important; inset: 0 !important; z-index: 2147483647 !important;
+              display: none !important; align-items: flex-end !important;
+              box-sizing: border-box !important; padding: 20px !important;
+              max-width: none !important; background: rgba(0, 0, 0, 0.42) !important;
+              column-span: all !important;
+            }
+            #quietread-footnote-overlay[data-open="true"] { display: flex !important; }
+            #quietread-footnote-panel {
+              width: 100% !important; max-width: none !important;
+              max-height: calc(var(--qr-page-height, 600px) - 40px) !important;
+              box-sizing: border-box !important; overflow-y: auto !important;
+              overscroll-behavior: contain; padding: 18px 20px 20px !important;
+              border: 1px solid $muted !important; border-radius: 16px !important;
+              background: $background !important; color: $foreground !important;
+              box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28) !important;
+            }
+            #quietread-footnote-header {
+              display: flex !important; align-items: center !important;
+              justify-content: space-between !important; gap: 16px !important;
+              margin-bottom: 12px !important; font-weight: 700 !important;
+            }
+            #quietread-footnote-close {
+              border: 0 !important; padding: 6px 0 6px 16px !important;
+              background: transparent !important; color: $foreground !important;
+              font: inherit !important;
+            }
+            #quietread-footnote-content,
+            #quietread-footnote-content * {
+              max-width: 100% !important; color: $foreground !important;
+            }
+            #quietread-footnote-content p {
+              margin: 0 !important; text-indent: 0 !important;
+              line-height: 1.65 !important;
+            }
+            """.trimIndent(),
+        )
+        document.body().appendElement("script").appendChild(DataNode(PAGINATION_SCRIPT))
+        document.outputSettings().prettyPrint(false)
+        return document.outerHtml()
+    }
+
+    private fun handleReady(total: Int) {
+        pageCount = total.coerceAtLeast(1)
+        val fragment = pendingFragment
+        val progress = pendingProgress
+        pendingFragment = null
+        pendingProgress = 0f
+        if (fragment != null) {
+            evaluate("window.qrGoAnchor(${jsString(fragment)});")
+        } else {
+            val target = floor(progress.coerceIn(0f, 0.999999f) * pageCount).toInt().coerceIn(0, pageCount - 1)
+            evaluate("window.qrGoPage($target);")
+        }
+    }
+
+    private fun handlePageChanged(newPage: Int) {
+        page = newPage.coerceIn(0, pageCount - 1)
+        val local = currentSpineProgress()
+        val overall = overallProgress(local)
+        onStateChanged(ReaderRenderState(spineIndex, page, pageCount, overall))
+        emitPosition(local)
+    }
+
+    private fun handleRelayout(total: Int, currentPage: Int) {
+        pageCount = total.coerceAtLeast(1)
+        handlePageChanged(currentPage)
+    }
+
+    private fun handleLink(rawHref: String) {
+        val href = Uri.decode(rawHref)
+        if (href.startsWith("http://", true) || href.startsWith("https://", true)) return
+        val current = epub.spine[spineIndex].file
+        val fragment = href.substringAfter('#', "").takeIf(String::isNotBlank)
+        if (href.startsWith("#")) {
+            fragment?.let { evaluate("window.qrGoAnchor(${jsString(it)});") }
+            return
+        }
+        val targetPath = runCatching {
+            val path = URI(href.substringBefore('#')).path
+            File(current.parentFile, path).canonicalFile
+        }.getOrNull() ?: return
+        val targetIndex = epub.spine.indexOfFirst { it.file.canonicalFile == targetPath }
+        if (targetIndex >= 0) loadChapter(targetIndex, 0f, fragment)
+    }
+
+    private fun currentSpineProgress(): Float =
+        if (pageCount <= 1) 0f else (page.toFloat() / pageCount).coerceIn(0f, 1f)
+
+    private fun emitPosition(local: Float) {
+        onPositionChanged(
+            ReadingPosition(
+                spineIndex = spineIndex,
+                spineProgress = local,
+                overallProgress = overallProgress(local),
+            ),
+        )
+    }
+
+    private fun overallProgress(local: Float): Float {
+        val total = totalWeight().toFloat()
+        val before = epub.spine.take(spineIndex).sumOf { it.file.length().coerceAtLeast(1L) }
+        val current = epub.spine[spineIndex].file.length().coerceAtLeast(1L)
+        return ((before + current * local) / total).coerceIn(0f, 1f)
+    }
+
+    private fun totalWeight(): Long = epub.spine.sumOf { it.file.length().coerceAtLeast(1L) }.coerceAtLeast(1L)
+
+    private fun evaluate(script: String) {
+        webView?.post { webView?.evaluateJavascript(script, null) }
+    }
+
+    private fun jsString(value: String): String = org.json.JSONObject.quote(value)
+
+    private inner class Bridge(private val view: WebView) {
+        @JavascriptInterface
+        fun ready(totalPages: Int) = view.post { handleReady(totalPages) }
+
+        @JavascriptInterface
+        fun pageChanged(currentPage: Int) = view.post { handlePageChanged(currentPage) }
+
+        @JavascriptInterface
+        fun relayout(totalPages: Int, currentPage: Int) = view.post {
+            handleRelayout(totalPages, currentPage)
+        }
+
+        @JavascriptInterface
+        fun tapped(ratio: Double) = view.post {
+            when {
+                ratio < 0.30 -> previousPage()
+                ratio > 0.70 -> nextPage()
+                else -> onCenterTap()
+            }
+        }
+
+        @JavascriptInterface
+        fun openLink(href: String) = view.post { handleLink(href) }
+
+        @JavascriptInterface
+        fun footnoteOpened() = view.post { onFootnoteOpened() }
+
+        @JavascriptInterface
+        fun turnPage(delta: Int) = view.post {
+            if (delta > 0) nextPage() else if (delta < 0) previousPage()
+        }
+    }
+
+    private companion object {
+        val PAGINATION_SCRIPT = """
+            (() => {
+              const flow = document.body;
+              let viewportWidth = 1;
+              let viewportHeight = 1;
+              let totalPages = 1;
+              let currentPage = 0;
+              let initialized = false;
+              let resizeTimer = 0;
+              let touchStart = null;
+              let suppressClickUntil = 0;
+              const pageTail = document.createElement('span');
+              pageTail.setAttribute('aria-hidden', 'true');
+              pageTail.style.cssText = 'position:absolute!important;left:0!important;top:0!important;width:1px!important;height:1px!important;pointer-events:none!important;visibility:hidden!important;';
+              flow.appendChild(pageTail);
+              const footnoteOverlay = document.createElement('div');
+              footnoteOverlay.id = 'quietread-footnote-overlay';
+              footnoteOverlay.setAttribute('role', 'dialog');
+              footnoteOverlay.setAttribute('aria-modal', 'true');
+              footnoteOverlay.setAttribute('aria-label', '脚注');
+              footnoteOverlay.setAttribute('aria-hidden', 'true');
+              footnoteOverlay.innerHTML = `
+                <div id="quietread-footnote-panel" tabindex="-1">
+                  <div id="quietread-footnote-header">
+                    <span>脚注</span>
+                    <button id="quietread-footnote-close" type="button" aria-label="关闭脚注">关闭</button>
+                  </div>
+                  <div id="quietread-footnote-content"></div>
+                </div>`;
+              document.documentElement.appendChild(footnoteOverlay);
+              const footnotePanel = document.getElementById('quietread-footnote-panel');
+              const footnoteContent = document.getElementById('quietread-footnote-content');
+              let lastFootnoteAnchor = null;
+
+              const footnoteTarget = (anchor) => {
+                const href = anchor.getAttribute('href') || '';
+                if (!href.startsWith('#') || href.length <= 1) return null;
+                let id;
+                try { id = decodeURIComponent(href.slice(1)); }
+                catch (_) { id = href.slice(1); }
+                const target = document.getElementById(id);
+                if (!target) return null;
+                const isNote = anchor.matches('.footnote, [role="doc-noteref"], [epub\\:type~="noteref"]') ||
+                  target.matches('.footnote-item, [role="doc-footnote"], [epub\\:type~="footnote"]') ||
+                  Boolean(target.closest('.footnote-content, [role="doc-footnote"], [epub\\:type~="footnote"]'));
+                return isNote ? target : null;
+              };
+
+              const showFootnote = (anchor) => {
+                const target = footnoteTarget(anchor);
+                if (!target) return false;
+                footnoteContent.replaceChildren();
+                Array.from(target.childNodes).forEach((node) => {
+                  footnoteContent.appendChild(node.cloneNode(true));
+                });
+                footnoteContent.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+                footnoteContent.querySelectorAll('a[href^="#"]').forEach((element) => element.removeAttribute('href'));
+                lastFootnoteAnchor = anchor;
+                footnoteOverlay.dataset.open = 'true';
+                footnoteOverlay.setAttribute('aria-hidden', 'false');
+                footnotePanel.scrollTop = 0;
+                footnotePanel.focus({ preventScroll: true });
+                QuietRead.footnoteOpened();
+                return true;
+              };
+
+              const closeFootnote = () => {
+                footnoteOverlay.removeAttribute('data-open');
+                footnoteOverlay.setAttribute('aria-hidden', 'true');
+                if (lastFootnoteAnchor) lastFootnoteAnchor.focus({ preventScroll: true });
+                lastFootnoteAnchor = null;
+              };
+
+              const applyPage = (report) => {
+                window.scrollTo(currentPage * viewportWidth, 0);
+                if (report) requestAnimationFrame(() => QuietRead.pageChanged(currentPage));
+              };
+
+              const measure = (preservePosition) => {
+                const previousTotal = totalPages;
+                const previousPage = currentPage;
+                viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
+                viewportHeight = Math.max(1, document.documentElement.clientHeight || window.innerHeight);
+                document.documentElement.style.setProperty('--qr-page-height', `${'$'}{viewportHeight}px`);
+                footnotePanel.style.setProperty('max-height', `${'$'}{Math.max(160, Math.floor(viewportHeight * 0.62))}px`, 'important');
+                window.scrollTo(0, 0);
+                pageTail.style.setProperty('left', '0px', 'important');
+                flow.style.setProperty('width', `${'$'}{viewportWidth}px`, 'important');
+                flow.style.setProperty('height', `${'$'}{viewportHeight}px`, 'important');
+                flow.style.setProperty('column-width', `${'$'}{Math.max(1, viewportWidth - 40)}px`, 'important');
+                flow.style.setProperty('column-gap', '40px', 'important');
+                void flow.offsetWidth;
+                totalPages = Math.max(1, Math.ceil(Math.max(
+                  flow.scrollWidth,
+                  document.documentElement.scrollWidth,
+                  document.body.scrollWidth
+                ) / viewportWidth));
+                pageTail.style.setProperty('left', `${'$'}{totalPages * viewportWidth - 1}px`, 'important');
+                void document.documentElement.offsetWidth;
+                currentPage = preservePosition
+                  ? Math.min(totalPages - 1, Math.floor((previousPage / Math.max(1, previousTotal)) * totalPages))
+                  : 0;
+                applyPage(false);
+                if (initialized) QuietRead.relayout(totalPages, currentPage);
+                else {
+                  initialized = true;
+                  QuietRead.ready(totalPages);
+                }
+              };
+
+              window.qrGoPage = (page) => {
+                currentPage = Math.max(0, Math.min(totalPages - 1, Number(page) || 0));
+                applyPage(true);
+              };
+              window.qrGoAnchor = (id) => {
+                const target = document.getElementById(id) || document.querySelector(`[name="${'$'}{CSS.escape(id)}"]`);
+                if (!target) { window.qrGoPage(0); return; }
+                const left = target.getBoundingClientRect().left + window.scrollX;
+                window.qrGoPage(Math.floor(left / viewportWidth));
+              };
+              document.addEventListener('touchstart', (event) => {
+                const target = event.target;
+                if (event.touches.length !== 1 ||
+                    (target.closest && target.closest('#quietread-footnote-overlay'))) {
+                  touchStart = null;
+                  return;
+                }
+                const touch = event.touches[0];
+                touchStart = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+              }, { passive: true });
+              document.addEventListener('touchmove', (event) => {
+                if (!touchStart || event.touches.length !== 1) return;
+                const touch = event.touches[0];
+                const dx = touch.clientX - touchStart.x;
+                const dy = touch.clientY - touchStart.y;
+                if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) event.preventDefault();
+              }, { passive: false });
+              document.addEventListener('touchend', (event) => {
+                if (!touchStart || event.changedTouches.length !== 1) {
+                  touchStart = null;
+                  return;
+                }
+                const touch = event.changedTouches[0];
+                const dx = touch.clientX - touchStart.x;
+                const dy = touch.clientY - touchStart.y;
+                const elapsed = Date.now() - touchStart.time;
+                const threshold = Math.max(48, viewportWidth * 0.12);
+                touchStart = null;
+                if (elapsed <= 900 && Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                  event.preventDefault();
+                  suppressClickUntil = Date.now() + 500;
+                  QuietRead.turnPage(dx < 0 ? 1 : -1);
+                }
+              }, { passive: false });
+              document.addEventListener('touchcancel', () => { touchStart = null; }, { passive: true });
+              document.addEventListener('click', (event) => {
+                if (Date.now() < suppressClickUntil) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                const overlay = event.target.closest && event.target.closest('#quietread-footnote-overlay');
+                if (overlay) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (event.target === footnoteOverlay ||
+                      (event.target.closest && event.target.closest('#quietread-footnote-close'))) {
+                    closeFootnote();
+                  }
+                  return;
+                }
+                const anchor = event.target.closest && event.target.closest('a[href]');
+                event.preventDefault();
+                if (anchor && showFootnote(anchor)) return;
+                if (anchor) QuietRead.openLink(anchor.getAttribute('href'));
+                else QuietRead.tapped(event.clientX / viewportWidth);
+              }, true);
+              document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && footnoteOverlay.dataset.open === 'true') {
+                  event.preventDefault();
+                  closeFootnote();
+                }
+              });
+              window.addEventListener('resize', () => {
+                window.clearTimeout(resizeTimer);
+                resizeTimer = window.setTimeout(() => measure(true), 100);
+              });
+
+              const documentLoaded = new Promise((resolve) => {
+                if (document.readyState === 'complete') resolve();
+                else window.addEventListener('load', resolve, { once: true });
+              });
+              const fontsLoaded = document.fonts && document.fonts.ready
+                ? document.fonts.ready.catch(() => {})
+                : Promise.resolve();
+              Promise.all([documentLoaded, fontsLoaded])
+                .then(() => requestAnimationFrame(() => measure(false)));
+            })();
+        """.trimIndent()
+    }
+}
+
+@Composable
+fun EpubReaderView(
+    epub: EpubPackage,
+    initialSpineIndex: Int,
+    initialSpineProgress: Float,
+    settings: ReaderSettings,
+    modifier: Modifier = Modifier,
+    onController: (ReaderController) -> Unit,
+    onStateChanged: (ReaderRenderState) -> Unit,
+    onCenterTap: () -> Unit,
+    onFootnoteOpened: () -> Unit,
+    onPositionChanged: (ReadingPosition) -> Unit,
+) {
+    val controller = remember(epub) { ReaderController(epub, initialSpineIndex, initialSpineProgress) }
+    controller.onStateChanged = onStateChanged
+    controller.onCenterTap = onCenterTap
+    controller.onFootnoteOpened = onFootnoteOpened
+    controller.onPositionChanged = onPositionChanged
+    SideEffect { onController(controller) }
+
+    AndroidView(
+        factory = controller::createWebView,
+        modifier = modifier,
+        update = { controller.updateSettings(settings) },
+    )
+    DisposableEffect(controller) {
+        onDispose(controller::destroy)
+    }
+}
