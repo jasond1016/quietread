@@ -6,7 +6,10 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quietread.db", null, 1) {
+internal class BookDatabase(
+    context: Context,
+    databaseName: String = "quietread.db",
+) : SQLiteOpenHelper(context, databaseName, null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -21,6 +24,9 @@ internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quiet
                 package_path TEXT NOT NULL,
                 last_spine_index INTEGER NOT NULL DEFAULT 0,
                 last_spine_progress REAL NOT NULL DEFAULT 0,
+                last_locator_id TEXT,
+                last_locator_path TEXT,
+                last_locator_offset INTEGER NOT NULL DEFAULT 0,
                 overall_progress REAL NOT NULL DEFAULT 0,
                 imported_at INTEGER NOT NULL,
                 last_opened_at INTEGER NOT NULL
@@ -30,7 +36,13 @@ internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quiet
         db.execSQL("CREATE INDEX books_recent ON books(last_opened_at DESC, imported_at DESC)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE books ADD COLUMN last_locator_id TEXT")
+            db.execSQL("ALTER TABLE books ADD COLUMN last_locator_path TEXT")
+            db.execSQL("ALTER TABLE books ADD COLUMN last_locator_offset INTEGER NOT NULL DEFAULT 0")
+        }
+    }
 
     fun allBooks(): List<BookRecord> = readableDatabase.query(
         "books", null, null, null, null, null, "last_opened_at DESC, imported_at DESC",
@@ -52,6 +64,9 @@ internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quiet
         val values = ContentValues().apply {
             put("last_spine_index", position.spineIndex)
             put("last_spine_progress", position.spineProgress.toDouble())
+            put("last_locator_id", position.locator?.elementId)
+            put("last_locator_path", position.locator?.elementPath)
+            put("last_locator_offset", position.locator?.textOffset ?: 0)
             put("overall_progress", position.overallProgress.toDouble())
             put("last_opened_at", openedAt)
         }
@@ -73,6 +88,9 @@ internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quiet
         put("package_path", packagePath)
         put("last_spine_index", lastSpineIndex)
         put("last_spine_progress", lastSpineProgress.toDouble())
+        put("last_locator_id", lastLocator?.elementId)
+        put("last_locator_path", lastLocator?.elementPath)
+        put("last_locator_offset", lastLocator?.textOffset ?: 0)
         put("overall_progress", overallProgress.toDouble())
         put("imported_at", importedAt)
         put("last_opened_at", lastOpenedAt)
@@ -89,6 +107,13 @@ internal class BookDatabase(context: Context) : SQLiteOpenHelper(context, "quiet
         packagePath = string("package_path"),
         lastSpineIndex = int("last_spine_index"),
         lastSpineProgress = float("last_spine_progress"),
+        lastLocator = nullableString("last_locator_path")?.let { path ->
+            ReadingLocator.create(
+                elementId = nullableString("last_locator_id"),
+                elementPath = path,
+                textOffset = int("last_locator_offset"),
+            )
+        },
         overallProgress = float("overall_progress"),
         importedAt = long("imported_at"),
         lastOpenedAt = long("last_opened_at"),

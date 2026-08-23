@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.quietread.app.data.ReaderSettings
 import com.quietread.app.data.ReaderTheme
+import com.quietread.app.data.ReadingLocator
 import com.quietread.app.data.ReadingPosition
 import com.quietread.app.epub.EpubPackage
 import org.jsoup.Jsoup
@@ -36,14 +37,18 @@ class ReaderController(
     private val epub: EpubPackage,
     private val initialSpineIndex: Int,
     private val initialSpineProgress: Float,
+    initialLocator: ReadingLocator?,
+    initialSettings: ReaderSettings,
 ) {
     private var webView: WebView? = null
-    private var settings = ReaderSettings()
+    private var settings = initialSettings
     private var spineIndex = initialSpineIndex.coerceIn(epub.spine.indices)
     private var page = 0
     private var pageCount = 1
     private var pendingProgress = initialSpineProgress.coerceIn(0f, 1f)
     private var pendingFragment: String? = null
+    private var pendingLocator = initialLocator
+    private var currentLocator: ReadingLocator? = initialLocator
 
     var onStateChanged: (ReaderRenderState) -> Unit = {}
     var onCenterTap: () -> Unit = {}
@@ -88,6 +93,7 @@ class ReaderController(
         settings = newSettings
         pendingProgress = currentSpineProgress()
         pendingFragment = null
+        pendingLocator = currentLocator
         loadCurrentChapter()
     }
 
@@ -141,6 +147,8 @@ class ReaderController(
         pageCount = 1
         pendingProgress = progress.coerceIn(0f, 1f)
         pendingFragment = fragment
+        pendingLocator = null
+        currentLocator = null
         loadCurrentChapter()
     }
 
@@ -252,27 +260,39 @@ class ReaderController(
         pageCount = total.coerceAtLeast(1)
         val fragment = pendingFragment
         val progress = pendingProgress
+        val locator = pendingLocator
         pendingFragment = null
         pendingProgress = 0f
+        pendingLocator = null
         if (fragment != null) {
             evaluate("window.qrGoAnchor(${jsString(fragment)});")
+        } else if (locator != null) {
+            val fallbackPage = floor(progress.coerceIn(0f, 0.999999f) * pageCount)
+                .toInt().coerceIn(0, pageCount - 1)
+            evaluate(
+                "window.qrGoLocator(" +
+                    "${jsString(locator.elementId.orEmpty())}," +
+                    "${jsString(locator.elementPath)}," +
+                    "${locator.textOffset},$fallbackPage);",
+            )
         } else {
             val target = floor(progress.coerceIn(0f, 0.999999f) * pageCount).toInt().coerceIn(0, pageCount - 1)
             evaluate("window.qrGoPage($target);")
         }
     }
 
-    private fun handlePageChanged(newPage: Int) {
+    private fun handlePageChanged(newPage: Int, locator: ReadingLocator?) {
         page = newPage.coerceIn(0, pageCount - 1)
+        currentLocator = locator
         val local = currentSpineProgress()
         val overall = overallProgress(local)
         onStateChanged(ReaderRenderState(spineIndex, page, pageCount, overall))
         emitPosition(local)
     }
 
-    private fun handleRelayout(total: Int, currentPage: Int) {
+    private fun handleRelayout(total: Int, currentPage: Int, locator: ReadingLocator?) {
         pageCount = total.coerceAtLeast(1)
-        handlePageChanged(currentPage)
+        handlePageChanged(currentPage, locator)
     }
 
     private fun handleLink(rawHref: String) {
@@ -300,6 +320,7 @@ class ReaderController(
             ReadingPosition(
                 spineIndex = spineIndex,
                 spineProgress = local,
+                locator = currentLocator,
                 overallProgress = overallProgress(local),
             ),
         )
@@ -325,11 +346,23 @@ class ReaderController(
         fun ready(totalPages: Int) = view.post { handleReady(totalPages) }
 
         @JavascriptInterface
-        fun pageChanged(currentPage: Int) = view.post { handlePageChanged(currentPage) }
+        fun pageChanged(currentPage: Int, elementId: String, elementPath: String, textOffset: Int) = view.post {
+            handlePageChanged(currentPage, ReadingLocator.create(elementId, elementPath, textOffset))
+        }
 
         @JavascriptInterface
-        fun relayout(totalPages: Int, currentPage: Int) = view.post {
-            handleRelayout(totalPages, currentPage)
+        fun relayout(
+            totalPages: Int,
+            currentPage: Int,
+            elementId: String,
+            elementPath: String,
+            textOffset: Int,
+        ) = view.post {
+            handleRelayout(
+                totalPages,
+                currentPage,
+                ReadingLocator.create(elementId, elementPath, textOffset),
+            )
         }
 
         @JavascriptInterface
@@ -427,14 +460,131 @@ class ReaderController(
                 lastFootnoteAnchor = null;
               };
 
+              const locatorElement = (id, path) => {
+                if (id) {
+                  const byId = document.getElementById(id);
+                  if (byId && flow.contains(byId)) return byId;
+                }
+                if (path === '.') return flow;
+                if (!/^\d+(\/\d+)*$/.test(path || '')) return null;
+                let element = flow;
+                for (const part of path.split('/')) {
+                  element = element.children[Number(part)];
+                  if (!element) return null;
+                }
+                return element;
+              };
+
+              const locatorPath = (element) => {
+                if (element === flow) return '.';
+                const parts = [];
+                let current = element;
+                while (current && current !== flow) {
+                  const parent = current.parentElement;
+                  if (!parent) return '';
+                  const index = Array.prototype.indexOf.call(parent.children, current);
+                  if (index < 0) return '';
+                  parts.unshift(String(index));
+                  current = parent;
+                }
+                return current === flow ? parts.join('/') : '';
+              };
+
+              const textOffsetWithin = (element, targetNode, nodeOffset) => {
+                const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+                let offset = 0;
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  if (node === targetNode) return offset + Math.max(0, Math.min(node.length, nodeOffset));
+                  offset += node.length;
+                }
+                return 0;
+              };
+
+              const captureLocator = () => {
+                const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  if (!node.nodeValue || !node.nodeValue.trim()) continue;
+                  const parent = node.parentElement;
+                  if (!parent || parent.closest('#quietread-footnote-overlay')) continue;
+                  const range = document.createRange();
+                  range.selectNodeContents(node);
+                  const visibleRects = Array.from(range.getClientRects()).filter((rect) =>
+                    rect.right > 0 && rect.left < viewportWidth &&
+                    rect.bottom > 0 && rect.top < viewportHeight &&
+                    rect.width > 0 && rect.height > 0
+                  );
+                  if (!visibleRects.length) continue;
+                  visibleRects.sort((a, b) => a.top - b.top || a.left - b.left);
+                  const rect = visibleRects[0];
+                  const x = Math.max(0, Math.min(viewportWidth - 1, rect.left + 1));
+                  const y = Math.max(0, Math.min(viewportHeight - 1, rect.top + rect.height / 2));
+                  const caretPosition = document.caretPositionFromPoint && document.caretPositionFromPoint(x, y);
+                  const caretRange = !caretPosition && document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
+                  const caretNode = caretPosition ? caretPosition.offsetNode : (caretRange && caretRange.startContainer);
+                  const caretOffset = caretPosition ? caretPosition.offset : (caretRange ? caretRange.startOffset : 0);
+                  const block = parent.closest('p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,figcaption,div,section,article') || parent;
+                  const path = locatorPath(block);
+                  if (!path) continue;
+                  const offset = caretNode && caretNode.nodeType === Node.TEXT_NODE && block.contains(caretNode)
+                    ? textOffsetWithin(block, caretNode, caretOffset)
+                    : textOffsetWithin(block, node, 0);
+                  return { id: block.id || '', path, offset };
+                }
+                return { id: '', path: '', offset: 0 };
+              };
+
+              const locatorLeft = (locator) => {
+                if (!locator) return null;
+                const element = locatorElement(locator.id, locator.path);
+                if (!element) return null;
+                let remaining = Math.max(0, Number(locator.offset) || 0);
+                const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+                let lastText = null;
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  lastText = node;
+                  if (remaining < node.length) {
+                    const range = document.createRange();
+                    range.setStart(node, remaining);
+                    range.setEnd(node, Math.min(node.length, remaining + 1));
+                    const rect = Array.from(range.getClientRects()).find((candidate) => candidate.width > 0 && candidate.height > 0);
+                    if (rect) return rect.left + window.scrollX;
+                  }
+                  remaining -= node.length;
+                }
+                if (lastText && lastText.length) {
+                  const range = document.createRange();
+                  range.setStart(lastText, lastText.length - 1);
+                  range.setEnd(lastText, lastText.length);
+                  const rect = range.getBoundingClientRect();
+                  if (rect.width > 0 || rect.height > 0) return rect.left + window.scrollX;
+                }
+                const rect = element.getBoundingClientRect();
+                return rect.left + window.scrollX;
+              };
+
+              const pageForLocator = (locator) => {
+                const left = locatorLeft(locator);
+                return left == null ? null : Math.max(0, Math.min(totalPages - 1, Math.floor(left / viewportWidth)));
+              };
+
+              const reportPage = (relayout) => requestAnimationFrame(() => {
+                const locator = captureLocator();
+                if (relayout) {
+                  QuietRead.relayout(totalPages, currentPage, locator.id, locator.path, locator.offset);
+                } else {
+                  QuietRead.pageChanged(currentPage, locator.id, locator.path, locator.offset);
+                }
+              });
+
               const applyPage = (report) => {
                 window.scrollTo(currentPage * viewportWidth, 0);
-                if (report) requestAnimationFrame(() => QuietRead.pageChanged(currentPage));
+                if (report) reportPage(false);
               };
 
               const measure = (preservePosition) => {
                 const previousTotal = totalPages;
                 const previousPage = currentPage;
+                const preservedLocator = preservePosition ? captureLocator() : null;
                 viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
                 viewportHeight = Math.max(1, document.documentElement.clientHeight || window.innerHeight);
                 document.documentElement.style.setProperty('--qr-page-height', `${'$'}{viewportHeight}px`);
@@ -453,11 +603,14 @@ class ReaderController(
                 ) / viewportWidth));
                 pageTail.style.setProperty('left', `${'$'}{totalPages * viewportWidth - 1}px`, 'important');
                 void document.documentElement.offsetWidth;
-                currentPage = preservePosition
-                  ? Math.min(totalPages - 1, Math.floor((previousPage / Math.max(1, previousTotal)) * totalPages))
-                  : 0;
+                const anchoredPage = preservePosition ? pageForLocator(preservedLocator) : null;
+                currentPage = anchoredPage == null
+                  ? (preservePosition
+                    ? Math.min(totalPages - 1, Math.floor((previousPage / Math.max(1, previousTotal)) * totalPages))
+                    : 0)
+                  : anchoredPage;
                 applyPage(false);
-                if (initialized) QuietRead.relayout(totalPages, currentPage);
+                if (initialized) reportPage(true);
                 else {
                   initialized = true;
                   QuietRead.ready(totalPages);
@@ -467,6 +620,10 @@ class ReaderController(
               window.qrGoPage = (page) => {
                 currentPage = Math.max(0, Math.min(totalPages - 1, Number(page) || 0));
                 applyPage(true);
+              };
+              window.qrGoLocator = (id, path, offset, fallbackPage) => {
+                const targetPage = pageForLocator({ id, path, offset });
+                window.qrGoPage(targetPage == null ? fallbackPage : targetPage);
               };
               window.qrGoAnchor = (id) => {
                 const target = document.getElementById(id) || document.querySelector(`[name="${'$'}{CSS.escape(id)}"]`);
@@ -561,6 +718,7 @@ fun EpubReaderView(
     epub: EpubPackage,
     initialSpineIndex: Int,
     initialSpineProgress: Float,
+    initialLocator: ReadingLocator?,
     settings: ReaderSettings,
     modifier: Modifier = Modifier,
     onController: (ReaderController) -> Unit,
@@ -569,7 +727,9 @@ fun EpubReaderView(
     onFootnoteOpened: () -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
 ) {
-    val controller = remember(epub) { ReaderController(epub, initialSpineIndex, initialSpineProgress) }
+    val controller = remember(epub) {
+        ReaderController(epub, initialSpineIndex, initialSpineProgress, initialLocator, settings)
+    }
     controller.onStateChanged = onStateChanged
     controller.onCenterTap = onCenterTap
     controller.onFootnoteOpened = onFootnoteOpened

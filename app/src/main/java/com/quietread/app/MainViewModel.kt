@@ -77,7 +77,12 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
                     )
                     savePosition(
                         book.id,
-                        ReadingPosition(book.lastSpineIndex, book.lastSpineProgress, book.overallProgress),
+                        ReadingPosition(
+                            spineIndex = book.lastSpineIndex,
+                            spineProgress = book.lastSpineProgress,
+                            locator = book.lastLocator,
+                            overallProgress = book.overallProgress,
+                        ),
                         immediately = true,
                     )
                 }

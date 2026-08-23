@@ -61,6 +61,7 @@ class BookRepository(private val context: Context) {
                     packagePath = parsed.packageRelativePath,
                     lastSpineIndex = 0,
                     lastSpineProgress = 0f,
+                    lastLocator = null,
                     overallProgress = 0f,
                     importedAt = now,
                     lastOpenedAt = now,

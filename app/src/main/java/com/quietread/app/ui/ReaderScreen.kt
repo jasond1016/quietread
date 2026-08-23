@@ -81,6 +81,7 @@ fun ReaderScreen(
             epub = epub,
             initialSpineIndex = book.lastSpineIndex,
             initialSpineProgress = book.lastSpineProgress,
+            initialLocator = book.lastLocator,
             settings = settings,
             modifier = Modifier
                 .fillMaxSize()
