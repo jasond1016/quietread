@@ -58,6 +58,7 @@ import com.quietread.app.data.ReadingSelection
 import com.quietread.app.epub.EpubPackage
 import kotlin.math.roundToInt
 import com.quietread.app.epub.ReadingStats
+import com.quietread.app.epub.ReadingProgress
 import com.quietread.app.epub.BookSearch
 import com.quietread.app.epub.BookSearchResult
 import kotlinx.coroutines.Dispatchers
@@ -125,6 +126,12 @@ fun ReaderScreen(
         totalWeight = epub.spine.sumOf { it.readingWeight },
         progress = renderState.overallProgress,
         totalReadingMs = book.totalReadingMs,
+    )
+    val estimatedPage = ReadingProgress.estimatedBookPage(
+        weights = epub.spine.map { it.readingWeight },
+        spineIndex = renderState.spineIndex,
+        chapterPage = renderState.page,
+        chapterPageCount = renderState.pageCount,
     )
 
     Box(Modifier.fillMaxSize().background(background)) {
@@ -235,6 +242,16 @@ fun ReaderScreen(
                     }
                 }
             }
+        }
+
+        if (!controlsVisible) {
+            Text(
+                text = "${estimatedPage.current} / ${estimatedPage.total}",
+                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding()
+                    .padding(end = 20.dp, bottom = 10.dp),
+                color = foreground.copy(alpha = 0.38f),
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
 
     }

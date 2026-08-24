@@ -21,4 +21,17 @@ class ReadingProgressTest {
         assertEquals(1, second.spineIndex)
         assertEquals(0.5f, second.spineProgress, 0.0001f)
     }
+
+    @Test
+    fun estimatesWholeBookPageFromCurrentChapterDensity() {
+        val page = ReadingProgress.estimatedBookPage(
+            weights = listOf(1_000, 3_000),
+            spineIndex = 1,
+            chapterPage = 2,
+            chapterPageCount = 10,
+        )
+
+        assertEquals(6, page.current)
+        assertEquals(13, page.total)
+    }
 }
