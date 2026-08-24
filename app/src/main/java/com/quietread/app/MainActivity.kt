@@ -91,6 +91,11 @@ class MainActivity : ComponentActivity() {
                                     onPositionChanged = { viewModel.updatePosition(screen.book.id, it) },
                                     onToggleBookmark = { viewModel.toggleBookmark(screen.book.id, it) },
                                     onAddHighlight = { viewModel.addHighlight(screen.book.id, it) },
+                                    onAddThought = { selection, note ->
+                                        viewModel.addThought(screen.book.id, selection, note)
+                                    },
+                                    onUpdateThought = viewModel::updateThought,
+                                    onDeleteAnnotation = viewModel::deleteAnnotation,
                                     onFontScaleChanged = applicationContainer.readerPreferences::setFontScale,
                                     onThemeChanged = applicationContainer.readerPreferences::setTheme,
                                     onParagraphStyleChanged =

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -76,6 +78,9 @@ fun ReaderScreen(
     onPositionChanged: (ReadingPosition) -> Unit,
     onToggleBookmark: (ReadingPosition) -> Unit,
     onAddHighlight: (ReadingSelection) -> Unit,
+    onAddThought: (ReadingSelection, String) -> Unit,
+    onUpdateThought: (String, String) -> Unit,
+    onDeleteAnnotation: (String) -> Unit,
     onFontScaleChanged: (Float) -> Unit,
     onThemeChanged: (ReaderTheme) -> Unit,
     onParagraphStyleChanged: (ParagraphStyle) -> Unit,
@@ -96,6 +101,9 @@ fun ReaderScreen(
         )
     }
     var selection by remember(book.id) { mutableStateOf<ReadingSelection?>(null) }
+    var thoughtSelection by remember(book.id) { mutableStateOf<ReadingSelection?>(null) }
+    var thoughtAnnotation by remember(book.id) { mutableStateOf<BookAnnotation?>(null) }
+    var thoughtText by remember(book.id) { mutableStateOf("") }
     var renderState by remember {
         mutableStateOf(
             ReaderRenderState(
@@ -256,6 +264,13 @@ fun ReaderScreen(
                         selection = null
                     }) { Text("划线") }
                     TextButton(onClick = {
+                        thoughtSelection = selected
+                        thoughtAnnotation = null
+                        thoughtText = ""
+                        controller?.clearSelection()
+                        selection = null
+                    }) { Text("写想法") }
+                    TextButton(onClick = {
                         controller?.clearSelection()
                         selection = null
                     }) { Text("取消") }
@@ -347,6 +362,61 @@ fun ReaderScreen(
                 showAnnotations = false
                 controlsVisible = false
                 controller?.goToLocator(annotation.spineIndex, annotation.startLocator)
+            },
+            onEdit = { annotation ->
+                showAnnotations = false
+                thoughtSelection = null
+                thoughtAnnotation = annotation
+                thoughtText = annotation.note.orEmpty()
+            },
+            onDelete = onDeleteAnnotation,
+        )
+    }
+
+    if (thoughtSelection != null || thoughtAnnotation != null) {
+        AlertDialog(
+            onDismissRequest = {
+                thoughtSelection = null
+                thoughtAnnotation = null
+            },
+            title = { Text(if (thoughtAnnotation == null) "写想法" else "编辑想法") },
+            text = {
+                Column {
+                    val source = thoughtSelection?.text ?: thoughtAnnotation?.selectedText.orEmpty()
+                    if (source.isNotBlank()) {
+                        Text(
+                            source,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    OutlinedTextField(
+                        value = thoughtText,
+                        onValueChange = { thoughtText = it.take(20_000) },
+                        label = { Text("想法") },
+                        minLines = 3,
+                        maxLines = 8,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = thoughtText.isNotBlank(),
+                    onClick = {
+                        thoughtSelection?.let { onAddThought(it, thoughtText) }
+                        thoughtAnnotation?.let { onUpdateThought(it.id, thoughtText) }
+                        thoughtSelection = null
+                        thoughtAnnotation = null
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    thoughtSelection = null
+                    thoughtAnnotation = null
+                }) { Text("取消") }
             },
         )
     }
@@ -450,6 +520,7 @@ private fun ContentsAndSearchSheet(
 }
 
 private enum class AnnotationFilter { ALL, BOOKMARK, HIGHLIGHT, THOUGHT }
+private enum class AnnotationSort { POSITION, CREATED }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -458,15 +529,26 @@ private fun AnnotationSheet(
     epub: EpubPackage,
     onDismiss: () -> Unit,
     onSelected: (BookAnnotation) -> Unit,
+    onEdit: (BookAnnotation) -> Unit,
+    onDelete: (String) -> Unit,
 ) {
     var filter by remember { mutableStateOf(AnnotationFilter.ALL) }
-    val visible = annotations.filter { annotation ->
+    var sort by remember { mutableStateOf(AnnotationSort.POSITION) }
+    val filtered = annotations.filter { annotation ->
         when (filter) {
             AnnotationFilter.ALL -> true
             AnnotationFilter.BOOKMARK -> annotation.type == AnnotationType.BOOKMARK
             AnnotationFilter.HIGHLIGHT -> annotation.type == AnnotationType.HIGHLIGHT
             AnnotationFilter.THOUGHT -> annotation.type == AnnotationType.THOUGHT
         }
+    }
+    val visible = when (sort) {
+        AnnotationSort.POSITION -> filtered.sortedWith(
+            compareBy<BookAnnotation> { it.spineIndex }
+                .thenBy { locatorOrderKey(it.startLocator.elementPath) }
+                .thenBy { it.startLocator.textOffset },
+        )
+        AnnotationSort.CREATED -> filtered.sortedByDescending { it.createdAt }
     }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
@@ -490,6 +572,16 @@ private fun AnnotationSheet(
                 else TextButton(onClick = { filter = item }) { Text(label) }
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = {
+                sort = if (sort == AnnotationSort.POSITION) AnnotationSort.CREATED else AnnotationSort.POSITION
+            }) {
+                Text(if (sort == AnnotationSort.POSITION) "书中顺序" else "最近添加")
+            }
+        }
         if (visible.isEmpty()) {
             Text("这里还没有标记", modifier = Modifier.padding(24.dp))
         } else {
@@ -497,24 +589,37 @@ private fun AnnotationSheet(
                 itemsIndexed(visible, key = { _, item -> item.id }) { _, annotation ->
                     val chapter = epub.toc.lastOrNull { it.spineIndex <= annotation.spineIndex }?.title
                         ?: "第 ${annotation.spineIndex + 1} 章"
-                    Column(
-                        Modifier.fillMaxWidth().clickable { onSelected(annotation) }
-                            .padding(horizontal = 24.dp, vertical = 14.dp),
-                    ) {
-                        Text(chapter, style = MaterialTheme.typography.labelMedium)
-                        Text(
-                            annotation.selectedText ?: if (annotation.type == AnnotationType.BOOKMARK) "书签" else "标记",
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                        )
-                        annotation.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(
+                            Modifier.weight(1f).clickable { onSelected(annotation) }
+                                .padding(start = 24.dp, top = 14.dp, bottom = 14.dp),
+                        ) {
+                            Text(chapter, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                annotation.selectedText
+                                    ?: if (annotation.type == AnnotationType.BOOKMARK) "书签" else "标记",
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                            )
+                            annotation.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        }
+                        if (annotation.type == AnnotationType.THOUGHT) {
+                            TextButton(onClick = { onEdit(annotation) }) { Text("编辑") }
+                        }
+                        IconButton(onClick = { onDelete(annotation.id) }) {
+                            Icon(Icons.Filled.DeleteOutline, contentDescription = "删除标记")
+                        }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
                 }
             }
         }
     }
+}
+
+private fun locatorOrderKey(path: String): String = if (path == ".") "" else {
+    path.split('/').joinToString("/") { it.toIntOrNull()?.toString()?.padStart(8, '0') ?: it }
 }
 
 @Composable

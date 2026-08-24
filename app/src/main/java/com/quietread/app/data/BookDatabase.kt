@@ -126,6 +126,15 @@ internal class BookDatabase(
         writableDatabase.delete("annotations", "id = ?", arrayOf(id))
     }
 
+    fun updateAnnotationNote(id: String, note: String, updatedAt: Long) {
+        val values = ContentValues().apply {
+            put("type", AnnotationType.THOUGHT.name)
+            put("note", note)
+            put("updated_at", updatedAt)
+        }
+        writableDatabase.update("annotations", values, "id = ?", arrayOf(id))
+    }
+
     private fun createAnnotationsTable(db: SQLiteDatabase) {
         db.execSQL(
             """

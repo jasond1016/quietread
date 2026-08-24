@@ -152,6 +152,33 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
+    fun addThought(bookId: String, selection: ReadingSelection, note: String) {
+        viewModelScope.launch {
+            runCatching { repository.addThought(bookId, selection, note) }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "无法保存想法")
+                }
+        }
+    }
+
+    fun updateThought(annotationId: String, note: String) {
+        viewModelScope.launch {
+            runCatching { repository.updateThought(annotationId, note) }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "无法更新想法")
+                }
+        }
+    }
+
+    fun deleteAnnotation(annotationId: String) {
+        viewModelScope.launch {
+            runCatching { repository.deleteAnnotation(annotationId) }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "无法删除标记")
+                }
+        }
+    }
+
     fun clearMessage() {
         mutableState.value = mutableState.value.copy(message = null)
     }

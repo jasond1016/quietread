@@ -162,22 +162,52 @@ class BookRepository(private val context: Context) {
     }
 
     suspend fun addHighlight(bookId: String, selection: ReadingSelection) = withContext(Dispatchers.IO) {
+        addRangeAnnotation(bookId, selection, AnnotationType.HIGHLIGHT, null)
+    }
+
+    suspend fun addThought(bookId: String, selection: ReadingSelection, note: String) = withContext(Dispatchers.IO) {
+        require(note.isNotBlank()) { "想法不能为空" }
+        addRangeAnnotation(bookId, selection, AnnotationType.THOUGHT, note.trim().take(20_000))
+    }
+
+    private suspend fun addRangeAnnotation(
+        bookId: String,
+        selection: ReadingSelection,
+        type: AnnotationType,
+        note: String?,
+    ) {
         mutationMutex.withLock {
             val now = System.currentTimeMillis()
             database.insertAnnotation(
                 BookAnnotation(
                     id = UUID.randomUUID().toString(),
                     bookId = bookId,
-                    type = AnnotationType.HIGHLIGHT,
+                    type = type,
                     spineIndex = selection.spineIndex,
                     startLocator = selection.start,
                     endLocator = selection.end,
                     selectedText = selection.text.trim().take(20_000),
+                    note = note,
                     color = DEFAULT_HIGHLIGHT_COLOR,
                     createdAt = now,
                     updatedAt = now,
                 ),
             )
+            refreshAnnotations()
+        }
+    }
+
+    suspend fun updateThought(annotationId: String, note: String) = withContext(Dispatchers.IO) {
+        require(note.isNotBlank()) { "想法不能为空" }
+        mutationMutex.withLock {
+            database.updateAnnotationNote(annotationId, note.trim().take(20_000), System.currentTimeMillis())
+            refreshAnnotations()
+        }
+    }
+
+    suspend fun deleteAnnotation(annotationId: String) = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            database.deleteAnnotation(annotationId)
             refreshAnnotations()
         }
     }
