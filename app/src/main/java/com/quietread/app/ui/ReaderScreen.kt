@@ -18,11 +18,17 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -36,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.quietread.app.data.BookRecord
+import com.quietread.app.data.ParagraphStyle
 import com.quietread.app.data.ReaderSettings
 import com.quietread.app.data.ReaderTheme
 import com.quietread.app.data.ReadingPosition
@@ -52,6 +59,7 @@ fun ReaderScreen(
     onPositionChanged: (ReadingPosition) -> Unit,
     onFontScaleChanged: (Float) -> Unit,
     onThemeChanged: (ReaderTheme) -> Unit,
+    onParagraphStyleChanged: (ParagraphStyle) -> Unit,
 ) {
     var controller by remember { mutableStateOf<ReaderController?>(null) }
     var controlsVisible by remember { mutableStateOf(true) }
@@ -104,7 +112,9 @@ fun ReaderScreen(
                     .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onBack) { Text("返回", color = foreground) }
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = foreground)
+                }
                 Text(
                     text = book.title,
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -142,8 +152,12 @@ fun ReaderScreen(
                     )
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    TextButton(onClick = { showContents = true }) { Text("目录", color = foreground) }
-                    TextButton(onClick = { showSettings = true }) { Text("阅读设置", color = foreground) }
+                    IconButton(onClick = { showContents = true }) {
+                        Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "目录", tint = foreground)
+                    }
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Filled.FormatSize, contentDescription = "阅读设置", tint = foreground)
+                    }
                 }
             }
         }
@@ -223,10 +237,38 @@ fun ReaderScreen(
                     ) { onThemeChanged(ReaderTheme.DARK) }
                 }
                 Spacer(Modifier.height(28.dp))
+                Text("段落", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ParagraphStyleButton(
+                        label = "原书",
+                        selected = settings.paragraphStyle == ParagraphStyle.ORIGINAL,
+                        modifier = Modifier.weight(1f),
+                    ) { onParagraphStyleChanged(ParagraphStyle.ORIGINAL) }
+                    ParagraphStyleButton(
+                        label = "顶格",
+                        selected = settings.paragraphStyle == ParagraphStyle.FLUSH,
+                        modifier = Modifier.weight(1f),
+                    ) { onParagraphStyleChanged(ParagraphStyle.FLUSH) }
+                    ParagraphStyleButton(
+                        label = "缩进",
+                        selected = settings.paragraphStyle == ParagraphStyle.INDENTED,
+                        modifier = Modifier.weight(1f),
+                    ) { onParagraphStyleChanged(ParagraphStyle.INDENTED) }
+                }
+                Spacer(Modifier.height(28.dp))
             }
         }
     }
 }
+
+@Composable
+private fun ParagraphStyleButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) = ThemeButton(label, selected, modifier, onClick)
 
 @Composable
 private fun ThemeButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {

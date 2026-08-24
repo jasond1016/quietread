@@ -90,6 +90,8 @@ class MainActivity : ComponentActivity() {
                                     onPositionChanged = { viewModel.updatePosition(screen.book.id, it) },
                                     onFontScaleChanged = applicationContainer.readerPreferences::setFontScale,
                                     onThemeChanged = applicationContainer.readerPreferences::setTheme,
+                                    onParagraphStyleChanged =
+                                        applicationContainer.readerPreferences::setParagraphStyle,
                                 )
                             }
                         }

@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.quietread.app.data.ReaderSettings
 import com.quietread.app.data.ReaderTheme
+import com.quietread.app.data.ParagraphStyle
 import com.quietread.app.data.ReadingLocator
 import com.quietread.app.data.ReadingPosition
 import com.quietread.app.epub.EpubPackage
@@ -190,6 +191,11 @@ class ReaderController(
         val foreground = if (dark) "#e4e5de" else "#252722"
         val muted = if (dark) "#a9ada5" else "#65685f"
         val fontPercent = (settings.fontScale * 100).toInt()
+        val paragraphRule = when (settings.paragraphStyle) {
+            ParagraphStyle.ORIGINAL -> ""
+            ParagraphStyle.FLUSH -> "body p { text-indent: 0 !important; }"
+            ParagraphStyle.INDENTED -> "body p { text-indent: 2em !important; }"
+        }
         document.head().prependElement("meta")
             .attr("http-equiv", "Content-Security-Policy")
             .attr(
@@ -219,6 +225,7 @@ class ReaderController(
             img, svg { max-height: calc(var(--qr-page-height, 100vh) - 64px) !important; object-fit: contain; }
             a { color: $foreground !important; text-decoration-color: $muted !important; }
             p { margin-block: 0.55em; }
+            $paragraphRule
             .footnote-content,
             [role="doc-footnote"],
             [epub\:type~="footnote"] { display: none !important; }
