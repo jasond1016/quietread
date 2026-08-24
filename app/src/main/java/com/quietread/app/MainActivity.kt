@@ -115,8 +115,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        viewModel.pauseReadingSession()
         viewModel.flushPosition()
         super.onStop()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        viewModel.resumeReadingSession()
     }
 
     private fun handleExternalIntent(externalIntent: Intent?) {

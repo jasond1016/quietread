@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import android.os.SystemClock
 
 sealed interface AppScreen {
     data object Library : AppScreen
@@ -33,11 +34,16 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
     private var saveJob: Job? = null
     private var pendingPosition: Pair<String, ReadingPosition>? = null
+    private val readingSession = ReadingSessionTracker()
 
     init {
         viewModelScope.launch {
             repository.books.collectLatest { books ->
-                mutableState.value = mutableState.value.copy(books = books)
+                val current = mutableState.value.screen
+                val updatedScreen = if (current is AppScreen.Reader) {
+                    books.firstOrNull { it.id == current.book.id }?.let { current.copy(book = it) } ?: current
+                } else current
+                mutableState.value = mutableState.value.copy(books = books, screen = updatedScreen)
             }
         }
     }
@@ -75,6 +81,7 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
                         busy = false,
                         screen = AppScreen.Reader(book, epub),
                     )
+                    readingSession.start(book.id)
                     savePosition(
                         book.id,
                         ReadingPosition(
@@ -96,10 +103,13 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
     }
 
     fun updatePosition(bookId: String, position: ReadingPosition) {
+        accrueReadingTime()
+        readingSession.interact()
         savePosition(bookId, position, immediately = false)
     }
 
     fun closeReader() {
+        pauseReadingSession()
         flushPosition()
         mutableState.value = mutableState.value.copy(screen = AppScreen.Library)
     }
@@ -135,6 +145,21 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
         enqueuePendingPosition()
     }
 
+    fun resumeReadingSession() {
+        val screen = mutableState.value.screen as? AppScreen.Reader ?: return
+        readingSession.start(screen.book.id)
+    }
+
+    fun pauseReadingSession() {
+        accrueReadingTime()
+        readingSession.pause()
+    }
+
+    private fun accrueReadingTime() {
+        val elapsed = readingSession.accrue()
+        if (elapsed != null) repository.enqueueReadingTime(elapsed.bookId, elapsed.elapsedMs)
+    }
+
     private fun enqueuePendingPosition() {
         val pending = pendingPosition ?: return
         pendingPosition = null
@@ -142,7 +167,44 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
     }
 
     override fun onCleared() {
+        pauseReadingSession()
         flushPosition()
         super.onCleared()
+    }
+}
+
+internal data class ReadingElapsed(val bookId: String, val elapsedMs: Long)
+
+internal class ReadingSessionTracker(
+    private val now: () -> Long = SystemClock::elapsedRealtime,
+    private val idleTimeoutMs: Long = 90_000L,
+) {
+    private var bookId: String? = null
+    private var checkpointMs = 0L
+    private var activeUntilMs = 0L
+
+    fun start(newBookId: String) {
+        val current = now()
+        bookId = newBookId
+        checkpointMs = current
+        activeUntilMs = current + idleTimeoutMs
+    }
+
+    fun interact() {
+        if (bookId == null) return
+        activeUntilMs = now() + idleTimeoutMs
+    }
+
+    fun accrue(): ReadingElapsed? {
+        val currentBook = bookId ?: return null
+        val current = now()
+        val end = minOf(current, activeUntilMs)
+        val elapsed = (end - checkpointMs).coerceAtLeast(0L)
+        checkpointMs = current
+        return elapsed.takeIf { it > 0L }?.let { ReadingElapsed(currentBook, it) }
+    }
+
+    fun pause() {
+        bookId = null
     }
 }

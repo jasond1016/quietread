@@ -9,7 +9,7 @@ import android.database.sqlite.SQLiteOpenHelper
 internal class BookDatabase(
     context: Context,
     databaseName: String = "quietread.db",
-) : SQLiteOpenHelper(context, databaseName, null, 2) {
+) : SQLiteOpenHelper(context, databaseName, null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -28,6 +28,7 @@ internal class BookDatabase(
                 last_locator_path TEXT,
                 last_locator_offset INTEGER NOT NULL DEFAULT 0,
                 overall_progress REAL NOT NULL DEFAULT 0,
+                total_reading_ms INTEGER NOT NULL DEFAULT 0,
                 imported_at INTEGER NOT NULL,
                 last_opened_at INTEGER NOT NULL
             )
@@ -41,6 +42,9 @@ internal class BookDatabase(
             db.execSQL("ALTER TABLE books ADD COLUMN last_locator_id TEXT")
             db.execSQL("ALTER TABLE books ADD COLUMN last_locator_path TEXT")
             db.execSQL("ALTER TABLE books ADD COLUMN last_locator_offset INTEGER NOT NULL DEFAULT 0")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE books ADD COLUMN total_reading_ms INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -73,6 +77,14 @@ internal class BookDatabase(
         writableDatabase.update("books", values, "id = ?", arrayOf(id))
     }
 
+    fun addReadingTime(id: String, elapsedMs: Long) {
+        if (elapsedMs <= 0L) return
+        writableDatabase.execSQL(
+            "UPDATE books SET total_reading_ms = total_reading_ms + ? WHERE id = ?",
+            arrayOf(elapsedMs, id),
+        )
+    }
+
     fun delete(id: String) {
         writableDatabase.delete("books", "id = ?", arrayOf(id))
     }
@@ -92,6 +104,7 @@ internal class BookDatabase(
         put("last_locator_path", lastLocator?.elementPath)
         put("last_locator_offset", lastLocator?.textOffset ?: 0)
         put("overall_progress", overallProgress.toDouble())
+        put("total_reading_ms", totalReadingMs)
         put("imported_at", importedAt)
         put("last_opened_at", lastOpenedAt)
     }
@@ -115,6 +128,7 @@ internal class BookDatabase(
             )
         },
         overallProgress = float("overall_progress"),
+        totalReadingMs = long("total_reading_ms"),
         importedAt = long("imported_at"),
         lastOpenedAt = long("last_opened_at"),
     )

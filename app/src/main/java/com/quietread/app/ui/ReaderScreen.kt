@@ -48,6 +48,7 @@ import com.quietread.app.data.ReaderTheme
 import com.quietread.app.data.ReadingPosition
 import com.quietread.app.epub.EpubPackage
 import kotlin.math.roundToInt
+import com.quietread.app.epub.ReadingStats
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,6 +84,11 @@ fun ReaderScreen(
     val background = if (dark) Color(0xFF171916) else Color(0xFFF5F1E8)
     val foreground = if (dark) Color(0xFFE4E5DE) else Color(0xFF252722)
     val panel = if (dark) Color(0xF520231F) else Color(0xF5FFFBF3)
+    val remaining = ReadingStats.estimatedRemainingMs(
+        totalWeight = epub.spine.sumOf { it.readingWeight },
+        progress = renderState.overallProgress,
+        totalReadingMs = book.totalReadingMs,
+    )
 
     Box(Modifier.fillMaxSize().background(background)) {
         EpubReaderView(
@@ -151,6 +157,20 @@ fun ReaderScreen(
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
+                Text(
+                    text = buildString {
+                        append("累计阅读 ")
+                        append(ReadingStats.formatDuration(book.totalReadingMs))
+                        remaining?.let {
+                            append(" · 预计还需 ")
+                            append(ReadingStats.formatDuration(it))
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    color = foreground.copy(alpha = 0.65f),
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
                     IconButton(onClick = { showContents = true }) {
                         Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "目录", tint = foreground)

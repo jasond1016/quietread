@@ -13,6 +13,7 @@ data class BookRecord(
     val lastSpineProgress: Float,
     val lastLocator: ReadingLocator?,
     val overallProgress: Float,
+    val totalReadingMs: Long,
     val importedAt: Long,
     val lastOpenedAt: Long,
 )

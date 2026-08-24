@@ -94,6 +94,7 @@ class BookRepository(private val context: Context) {
                     lastSpineProgress = 0f,
                     lastLocator = null,
                     overallProgress = 0f,
+                    totalReadingMs = 0L,
                     importedAt = now,
                     lastOpenedAt = now,
                 )
@@ -119,6 +120,16 @@ class BookRepository(private val context: Context) {
 
     fun enqueuePosition(bookId: String, position: ReadingPosition) {
         positionUpdates.trySend(PositionUpdate(bookId, position))
+    }
+
+    fun enqueueReadingTime(bookId: String, elapsedMs: Long) {
+        if (elapsedMs <= 0L) return
+        repositoryScope.launch {
+            mutationMutex.withLock {
+                database.addReadingTime(bookId, elapsedMs)
+                refresh()
+            }
+        }
     }
 
     suspend fun delete(book: BookRecord) = withContext(Dispatchers.IO) {
