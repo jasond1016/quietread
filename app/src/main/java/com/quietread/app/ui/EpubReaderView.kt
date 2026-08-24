@@ -61,6 +61,7 @@ class ReaderController(
     var onStateChanged: (ReaderRenderState) -> Unit = {}
     var onCenterTap: () -> Unit = {}
     var onFootnoteOpened: () -> Unit = {}
+    var onBookmarkGesture: () -> Unit = {}
     var onPositionChanged: (ReadingPosition) -> Unit = {}
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -132,6 +133,18 @@ class ReaderController(
     fun goToOverall(progress: Float) {
         val target = ReadingProgress.target(spineWeights, progress)
         loadChapter(target.spineIndex, target.spineProgress)
+    }
+
+    fun goToLocator(spine: Int, locator: ReadingLocator) {
+        spineIndex = spine.coerceIn(epub.spine.indices)
+        page = 0
+        pageCount = 1
+        pendingProgress = 0f
+        pendingFragment = null
+        pendingLocator = locator
+        currentLocator = locator
+        completed = false
+        loadCurrentChapter()
     }
 
     fun destroy() {
@@ -442,6 +455,9 @@ class ReaderController(
         fun footnoteOpened() = view.post { onFootnoteOpened() }
 
         @JavascriptInterface
+        fun toggleBookmark() = view.post { onBookmarkGesture() }
+
+        @JavascriptInterface
         fun turnPage(delta: Int) = view.post {
             if (delta > 0) nextPage() else if (delta < 0) previousPage()
         }
@@ -728,6 +744,10 @@ class ReaderController(
                   event.preventDefault();
                   suppressClickUntil = Date.now() + 500;
                   QuietRead.turnPage(dx < 0 ? 1 : -1);
+                } else if (elapsed <= 900 && dy >= Math.max(72, viewportHeight * 0.10) && Math.abs(dy) > Math.abs(dx) * 1.2) {
+                  event.preventDefault();
+                  suppressClickUntil = Date.now() + 500;
+                  QuietRead.toggleBookmark();
                 }
               }, { passive: false });
               document.addEventListener('touchcancel', () => { touchStart = null; }, { passive: true });
@@ -790,6 +810,7 @@ fun EpubReaderView(
     onStateChanged: (ReaderRenderState) -> Unit,
     onCenterTap: () -> Unit,
     onFootnoteOpened: () -> Unit,
+    onBookmarkGesture: () -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
 ) {
     val controller = remember(epub) {
@@ -798,6 +819,7 @@ fun EpubReaderView(
     controller.onStateChanged = onStateChanged
     controller.onCenterTap = onCenterTap
     controller.onFootnoteOpened = onFootnoteOpened
+    controller.onBookmarkGesture = onBookmarkGesture
     controller.onPositionChanged = onPositionChanged
     SideEffect { onController(controller) }
 

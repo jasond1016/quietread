@@ -134,6 +134,33 @@ class BookRepository(private val context: Context) {
         }
     }
 
+    suspend fun toggleBookmark(bookId: String, position: ReadingPosition): Boolean = withContext(Dispatchers.IO) {
+        val locator = position.locator ?: throw IllegalStateException("当前页面尚未完成定位")
+        mutationMutex.withLock {
+            val existing = database.bookmarkAt(bookId, position.spineIndex, locator)
+            if (existing != null) {
+                database.deleteAnnotation(existing.id)
+                refreshAnnotations()
+                false
+            } else {
+                val now = System.currentTimeMillis()
+                database.insertAnnotation(
+                    BookAnnotation(
+                        id = UUID.randomUUID().toString(),
+                        bookId = bookId,
+                        type = AnnotationType.BOOKMARK,
+                        spineIndex = position.spineIndex,
+                        startLocator = locator,
+                        createdAt = now,
+                        updatedAt = now,
+                    ),
+                )
+                refreshAnnotations()
+                true
+            }
+        }
+    }
+
     suspend fun delete(book: BookRecord) = withContext(Dispatchers.IO) {
         val stagedDirectory = mutationMutex.withLock {
             val root = booksRoot.canonicalFile

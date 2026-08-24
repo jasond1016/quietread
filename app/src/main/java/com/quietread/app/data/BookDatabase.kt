@@ -100,6 +100,32 @@ internal class BookDatabase(
         "annotations", null, null, null, null, null, "created_at DESC",
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.toAnnotation()) } }
 
+    fun bookmarkAt(bookId: String, spineIndex: Int, locator: ReadingLocator): BookAnnotation? =
+        readableDatabase.query(
+            "annotations",
+            null,
+            "book_id = ? AND type = ? AND spine_index = ? AND start_locator_path = ? AND start_locator_offset = ?",
+            arrayOf(
+                bookId,
+                AnnotationType.BOOKMARK.name,
+                spineIndex.toString(),
+                locator.elementPath,
+                locator.textOffset.toString(),
+            ),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.toAnnotation() else null }
+
+    fun insertAnnotation(annotation: BookAnnotation) {
+        writableDatabase.insertOrThrow("annotations", null, annotation.values())
+    }
+
+    fun deleteAnnotation(id: String) {
+        writableDatabase.delete("annotations", "id = ?", arrayOf(id))
+    }
+
     private fun createAnnotationsTable(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -147,6 +173,24 @@ internal class BookDatabase(
         put("total_reading_ms", totalReadingMs)
         put("imported_at", importedAt)
         put("last_opened_at", lastOpenedAt)
+    }
+
+    private fun BookAnnotation.values() = ContentValues().apply {
+        put("id", id)
+        put("book_id", bookId)
+        put("type", type.name)
+        put("spine_index", spineIndex)
+        put("start_locator_id", startLocator.elementId)
+        put("start_locator_path", startLocator.elementPath)
+        put("start_locator_offset", startLocator.textOffset)
+        put("end_locator_id", endLocator?.elementId)
+        put("end_locator_path", endLocator?.elementPath)
+        endLocator?.let { put("end_locator_offset", it.textOffset) }
+        put("selected_text", selectedText)
+        put("note", note)
+        color?.let { put("color", it) }
+        put("created_at", createdAt)
+        put("updated_at", updatedAt)
     }
 
     private fun Cursor.toBook() = BookRecord(

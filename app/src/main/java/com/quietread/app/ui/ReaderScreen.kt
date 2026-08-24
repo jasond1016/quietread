@@ -30,6 +30,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Bookmarks
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -62,6 +64,7 @@ fun ReaderScreen(
     settings: ReaderSettings,
     onBack: () -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
+    onToggleBookmark: (ReadingPosition) -> Unit,
     onFontScaleChanged: (Float) -> Unit,
     onThemeChanged: (ReaderTheme) -> Unit,
     onParagraphStyleChanged: (ParagraphStyle) -> Unit,
@@ -71,6 +74,16 @@ fun ReaderScreen(
     var showContents by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showAnnotations by remember { mutableStateOf(false) }
+    var currentPosition by remember(book.id) {
+        mutableStateOf(
+            ReadingPosition(
+                book.lastSpineIndex,
+                book.lastSpineProgress,
+                book.lastLocator,
+                book.overallProgress,
+            ),
+        )
+    }
     var renderState by remember {
         mutableStateOf(
             ReaderRenderState(
@@ -110,7 +123,11 @@ fun ReaderScreen(
             onStateChanged = { renderState = it },
             onCenterTap = { controlsVisible = !controlsVisible },
             onFootnoteOpened = { controlsVisible = false },
-            onPositionChanged = onPositionChanged,
+            onBookmarkGesture = { onToggleBookmark(currentPosition) },
+            onPositionChanged = {
+                currentPosition = it
+                onPositionChanged(it)
+            },
         )
 
         if (controlsVisible) {
@@ -182,6 +199,21 @@ fun ReaderScreen(
                     }
                     IconButton(onClick = { showAnnotations = true }) {
                         Icon(Icons.Filled.Bookmarks, contentDescription = "标记", tint = foreground)
+                    }
+                    val currentBookmark = currentPosition.locator?.let { locator ->
+                        annotations.any {
+                            it.type == AnnotationType.BOOKMARK &&
+                                it.spineIndex == currentPosition.spineIndex &&
+                                it.startLocator.elementPath == locator.elementPath &&
+                                it.startLocator.textOffset == locator.textOffset
+                        }
+                    } == true
+                    IconButton(onClick = { onToggleBookmark(currentPosition) }) {
+                        Icon(
+                            if (currentBookmark) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                            contentDescription = if (currentBookmark) "移除书签" else "添加书签",
+                            tint = foreground,
+                        )
                     }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.FormatSize, contentDescription = "阅读设置", tint = foreground)
@@ -294,6 +326,11 @@ fun ReaderScreen(
             annotations = annotations,
             epub = epub,
             onDismiss = { showAnnotations = false },
+            onSelected = { annotation ->
+                showAnnotations = false
+                controlsVisible = false
+                controller?.goToLocator(annotation.spineIndex, annotation.startLocator)
+            },
         )
     }
 }
@@ -306,6 +343,7 @@ private fun AnnotationSheet(
     annotations: List<BookAnnotation>,
     epub: EpubPackage,
     onDismiss: () -> Unit,
+    onSelected: (BookAnnotation) -> Unit,
 ) {
     var filter by remember { mutableStateOf(AnnotationFilter.ALL) }
     val visible = annotations.filter { annotation ->
@@ -345,7 +383,10 @@ private fun AnnotationSheet(
                 itemsIndexed(visible, key = { _, item -> item.id }) { _, annotation ->
                     val chapter = epub.toc.lastOrNull { it.spineIndex <= annotation.spineIndex }?.title
                         ?: "第 ${annotation.spineIndex + 1} 章"
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp)) {
+                    Column(
+                        Modifier.fillMaxWidth().clickable { onSelected(annotation) }
+                            .padding(horizontal = 24.dp, vertical = 14.dp),
+                    ) {
                         Text(chapter, style = MaterialTheme.typography.labelMedium)
                         Text(
                             annotation.selectedText ?: if (annotation.type == AnnotationType.BOOKMARK) "书签" else "标记",

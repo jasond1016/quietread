@@ -130,6 +130,18 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
+    fun toggleBookmark(bookId: String, position: ReadingPosition) {
+        viewModelScope.launch {
+            runCatching { repository.toggleBookmark(bookId, position) }
+                .onSuccess { added ->
+                    mutableState.value = mutableState.value.copy(message = if (added) "已添加书签" else "已移除书签")
+                }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "无法更新书签")
+                }
+        }
+    }
+
     fun clearMessage() {
         mutableState.value = mutableState.value.copy(message = null)
     }

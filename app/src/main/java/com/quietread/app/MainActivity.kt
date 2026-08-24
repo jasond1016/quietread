@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                                     settings = readerSettings,
                                     onBack = viewModel::closeReader,
                                     onPositionChanged = { viewModel.updatePosition(screen.book.id, it) },
+                                    onToggleBookmark = { viewModel.toggleBookmark(screen.book.id, it) },
                                     onFontScaleChanged = applicationContainer.readerPreferences::setFontScale,
                                     onThemeChanged = applicationContainer.readerPreferences::setTheme,
                                     onParagraphStyleChanged =
