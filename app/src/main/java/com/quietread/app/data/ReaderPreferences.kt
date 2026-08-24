@@ -1,6 +1,7 @@
 package com.quietread.app.data
 
 import android.content.Context
+import androidx.core.content.edit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -19,12 +20,12 @@ class ReaderPreferences(context: Context) {
 
     fun setFontScale(scale: Float) {
         val safeScale = scale.coerceIn(0.8f, 1.5f)
-        preferences.edit().putFloat(KEY_FONT_SCALE, safeScale).apply()
+        preferences.edit { putFloat(KEY_FONT_SCALE, safeScale) }
         mutableSettings.value = mutableSettings.value.copy(fontScale = safeScale)
     }
 
     fun setTheme(theme: ReaderTheme) {
-        preferences.edit().putString(KEY_THEME, theme.name).apply()
+        preferences.edit { putString(KEY_THEME, theme.name) }
         mutableSettings.value = mutableSettings.value.copy(theme = theme)
     }
 

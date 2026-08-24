@@ -120,19 +120,25 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
     private fun savePosition(bookId: String, position: ReadingPosition, immediately: Boolean) {
         pendingPosition = bookId to position
         saveJob?.cancel()
+        if (immediately) {
+            enqueuePendingPosition()
+            return
+        }
         saveJob = viewModelScope.launch {
-            if (!immediately) delay(350)
-            val pending = pendingPosition ?: return@launch
-            pendingPosition = null
-            repository.savePosition(pending.first, pending.second)
+            delay(350)
+            enqueuePendingPosition()
         }
     }
 
-    private fun flushPosition() {
+    fun flushPosition() {
         saveJob?.cancel()
+        enqueuePendingPosition()
+    }
+
+    private fun enqueuePendingPosition() {
         val pending = pendingPosition ?: return
         pendingPosition = null
-        viewModelScope.launch { repository.savePosition(pending.first, pending.second) }
+        repository.enqueuePosition(pending.first, pending.second)
     }
 
     override fun onCleared() {

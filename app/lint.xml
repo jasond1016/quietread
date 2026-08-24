@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+      Version notifications are handled as deliberate toolchain upgrades. AGP 8.13
+      supports API 36, while the newest Compose BOM requires API 37 and AGP 9.1.2.
+    -->
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="GradleDependency" severity="ignore" />
+</lint>

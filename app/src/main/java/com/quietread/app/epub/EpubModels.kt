@@ -5,6 +5,7 @@ import java.io.File
 data class SpineItem(
     val id: String,
     val file: File,
+    val readingWeight: Long,
 )
 
 data class TocEntry(
@@ -18,6 +19,7 @@ data class EpubPackage(
     val title: String,
     val author: String?,
     val coverFile: File?,
+    val contentRoot: File,
     val packageRelativePath: String,
     val spine: List<SpineItem>,
     val toc: List<TocEntry>,

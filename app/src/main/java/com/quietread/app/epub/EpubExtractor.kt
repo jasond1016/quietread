@@ -8,9 +8,10 @@ object EpubExtractor {
     private const val MAX_ENTRIES = 10_000
     private const val MAX_UNCOMPRESSED_BYTES = 512L * 1024L * 1024L
 
-    fun extract(epub: File, destination: File) {
+    fun extract(epub: File, destination: File, byteBudget: Long = MAX_UNCOMPRESSED_BYTES) {
         destination.mkdirs()
         val root = destination.canonicalFile
+        val safeBudget = byteBudget.coerceIn(1L, MAX_UNCOMPRESSED_BYTES)
         var entryCount = 0
         var totalBytes = 0L
         val seen = mutableSetOf<String>()
@@ -37,8 +38,13 @@ object EpubExtractor {
                             val read = zip.read(buffer)
                             if (read < 0) break
                             totalBytes += read
-                            if (totalBytes > MAX_UNCOMPRESSED_BYTES) {
-                                throw InvalidEpubException("EPUB 解压后体积过大")
+                            if (totalBytes > safeBudget) {
+                                val message = if (safeBudget < MAX_UNCOMPRESSED_BYTES) {
+                                    "设备存储空间不足，无法解压 EPUB"
+                                } else {
+                                    "EPUB 解压后体积过大"
+                                }
+                                throw InvalidEpubException(message)
                             }
                             target.write(buffer, 0, read)
                         }

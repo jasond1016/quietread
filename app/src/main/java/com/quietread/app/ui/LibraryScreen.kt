@@ -1,6 +1,8 @@
 package com.quietread.app.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -41,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -184,9 +187,15 @@ private fun BookTile(book: BookRecord, onOpen: () -> Unit, onDelete: () -> Unit)
 
 @Composable
 private fun BookCover(book: BookRecord) {
-    val bitmap by produceState<android.graphics.Bitmap?>(null, book.coverPath) {
+    val density = LocalDensity.current
+    val targetWidth = with(density) { 160.dp.roundToPx() }
+    val targetHeight = with(density) { 230.dp.roundToPx() }
+    val cacheKey = "${book.coverPath}:$targetWidth:$targetHeight"
+    val bitmap by produceState<Bitmap?>(null, cacheKey) {
         value = withContext(Dispatchers.IO) {
-            book.coverPath?.let(::File)?.takeIf(File::isFile)?.let { BitmapFactory.decodeFile(it.absolutePath) }
+            book.coverPath?.let(::File)?.takeIf(File::isFile)?.let { file ->
+                CoverBitmapCache.load(cacheKey, file, targetWidth, targetHeight)
+            }
         }
     }
     if (bitmap != null) {
@@ -210,4 +219,41 @@ private fun BookCover(book: BookRecord) {
             )
         }
     }
+}
+
+private object CoverBitmapCache {
+    private val cache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 16L / 1024L).toInt().coerceAtLeast(4 * 1024),
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+
+    @Synchronized
+    fun load(key: String, file: File, targetWidth: Int, targetHeight: Int): Bitmap? {
+        cache.get(key)?.let { return it }
+        val bitmap = decodeSampled(file, targetWidth, targetHeight) ?: return null
+        cache.put(key, bitmap)
+        return bitmap
+    }
+
+    private fun decodeSampled(file: File, targetWidth: Int, targetHeight: Int): Bitmap? = runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+
+        var sampleSize = 1
+        while (
+            bounds.outWidth / (sampleSize * 2) >= targetWidth &&
+            bounds.outHeight / (sampleSize * 2) >= targetHeight
+        ) {
+            sampleSize *= 2
+        }
+        BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
+        )
+    }.getOrNull()
 }

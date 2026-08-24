@@ -36,6 +36,17 @@ class EpubExtractorTest {
         }
     }
 
+    @Test
+    fun rejectsContentLargerThanAvailableBudget() {
+        val epub = zip("OPS/chapter.xhtml" to "正文内容")
+
+        val error = assertThrows(InvalidEpubException::class.java) {
+            EpubExtractor.extract(epub, File(root, "out"), byteBudget = 4)
+        }
+
+        assertEquals("设备存储空间不足，无法解压 EPUB", error.message)
+    }
+
     private fun zip(vararg entries: Pair<String, String>): File {
         val file = File(root, "book-${System.nanoTime()}.epub")
         ZipOutputStream(file.outputStream()).use { zip ->

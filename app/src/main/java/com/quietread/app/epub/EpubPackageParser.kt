@@ -1,5 +1,6 @@
 package com.quietread.app.epub
 
+import org.jsoup.Jsoup
 import org.w3c.dom.Element
 import java.io.File
 import java.net.URI
@@ -56,7 +57,10 @@ object EpubPackageParser {
             .filter { it.localTag() == "itemref" && !it.getAttribute("linear").equals("no", true) }
             .mapNotNull { itemRef -> manifest[itemRef.getAttribute("idref")] }
             .filter { it.mediaType.contains("html", ignoreCase = true) }
-            .map { item -> SpineItem(item.id, resolveWithin(contentRoot, packageBase, item.href)) }
+            .map { item ->
+                val file = resolveWithin(contentRoot, packageBase, item.href)
+                SpineItem(item.id, file, estimateReadingWeight(file))
+            }
             .filter { it.file.isFile }
         if (spine.isEmpty()) throw InvalidEpubException("EPUB 没有可阅读的正文")
 
@@ -89,6 +93,7 @@ object EpubPackageParser {
             title = title,
             author = author,
             coverFile = coverFile,
+            contentRoot = contentRoot.canonicalFile,
             packageRelativePath = packageFile.relativeTo(contentRoot.canonicalFile).invariantSeparatorsPath,
             spine = spine,
             toc = toc,
@@ -193,10 +198,23 @@ object EpubPackageParser {
     private fun decodeComponent(value: String): String =
         URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8.name())
 
+    private fun estimateReadingWeight(file: File): Long {
+        if (!file.isFile) return 1L
+        return runCatching {
+            val document = Jsoup.parse(file, null, "")
+            val text = document.text()
+            val characters = text.codePointCount(0, text.length).toLong()
+            val illustrations = document.select("img,svg").size * IMAGE_READING_WEIGHT
+            (characters + illustrations).coerceAtLeast(1L)
+        }.getOrDefault(file.length().coerceAtLeast(1L))
+    }
+
     private data class ManifestItem(
         val id: String,
         val href: String,
         val mediaType: String,
         val properties: Set<String>,
     )
+
+    private const val IMAGE_READING_WEIGHT = 400L
 }

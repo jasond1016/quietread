@@ -6,8 +6,10 @@ import android.net.Uri
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.MimeTypeMap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -19,6 +21,8 @@ import com.quietread.app.data.ReaderTheme
 import com.quietread.app.data.ReadingLocator
 import com.quietread.app.data.ReadingPosition
 import com.quietread.app.epub.EpubPackage
+import com.quietread.app.epub.EpubResourceResolver
+import com.quietread.app.epub.ReadingProgress
 import org.jsoup.Jsoup
 import org.jsoup.nodes.DataNode
 import java.io.ByteArrayInputStream
@@ -49,6 +53,9 @@ class ReaderController(
     private var pendingFragment: String? = null
     private var pendingLocator = initialLocator
     private var currentLocator: ReadingLocator? = initialLocator
+    private var completed = spineIndex == epub.spine.lastIndex && initialSpineProgress >= 0.999999f
+    private val spineWeights = epub.spine.map { it.readingWeight }
+    private val contentRoot = epub.contentRoot.canonicalFile
 
     var onStateChanged: (ReaderRenderState) -> Unit = {}
     var onCenterTap: () -> Unit = {}
@@ -64,8 +71,9 @@ class ReaderController(
             javaScriptCanOpenWindowsAutomatically = false
             domStorageEnabled = false
             allowContentAccess = false
-            allowFileAccess = true
+            allowFileAccess = false
             blockNetworkLoads = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             builtInZoomControls = false
             displayZoomControls = false
             setSupportZoom(false)
@@ -78,12 +86,8 @@ class ReaderController(
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
 
-            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                val scheme = request?.url?.scheme?.lowercase()
-                return if (scheme == "http" || scheme == "https") {
-                    WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
-                } else null
-            }
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
+                request?.url?.let(::interceptResource)
         }
         loadCurrentChapter()
     }
@@ -103,13 +107,19 @@ class ReaderController(
         } else if (spineIndex + 1 < epub.spine.size) {
             emitPosition(1f)
             loadChapter(spineIndex + 1, 0f)
+        } else {
+            completed = true
+            emitPosition(1f)
+            onStateChanged(ReaderRenderState(spineIndex, page, pageCount, 1f))
         }
     }
 
     fun previousPage() {
         if (page > 0) {
+            completed = false
             evaluate("window.qrGoPage(${page - 1});")
         } else if (spineIndex > 0) {
+            completed = false
             loadChapter(spineIndex - 1, 1f)
         }
     }
@@ -119,17 +129,8 @@ class ReaderController(
     }
 
     fun goToOverall(progress: Float) {
-        val target = progress.coerceIn(0f, 0.999999f) * totalWeight()
-        var consumed = 0L
-        epub.spine.forEachIndexed { index, item ->
-            val weight = item.file.length().coerceAtLeast(1L)
-            if (target < consumed + weight || index == epub.spine.lastIndex) {
-                val local = ((target - consumed) / weight.toFloat()).coerceIn(0f, 1f)
-                loadChapter(index, local)
-                return
-            }
-            consumed += weight
-        }
+        val target = ReadingProgress.target(spineWeights, progress)
+        loadChapter(target.spineIndex, target.spineProgress)
     }
 
     fun destroy() {
@@ -149,13 +150,14 @@ class ReaderController(
         pendingFragment = fragment
         pendingLocator = null
         currentLocator = null
+        completed = index == epub.spine.lastIndex && progress >= 0.999999f
         loadCurrentChapter()
     }
 
     private fun loadCurrentChapter() {
         val view = webView ?: return
         val chapter = epub.spine[spineIndex].file
-        val base = (chapter.parentFile ?: chapter).toURI().toString()
+        val base = chapterBaseUrl(chapter)
         val html = sanitizeAndPrepare(chapter, base, settings)
         view.loadDataWithBaseURL(base, html, "text/html", "UTF-8", null)
     }
@@ -171,7 +173,13 @@ class ReaderController(
         document.select("[src], [href]").forEach { element ->
             listOf("src", "href").forEach { attribute ->
                 val value = element.attr(attribute).trim().lowercase()
-                if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("javascript:")) {
+                if (
+                    value.startsWith("http://") ||
+                    value.startsWith("https://") ||
+                    value.startsWith("file:") ||
+                    value.startsWith("content:") ||
+                    value.startsWith("javascript:")
+                ) {
                     element.removeAttr(attribute)
                 }
             }
@@ -186,7 +194,7 @@ class ReaderController(
             .attr("http-equiv", "Content-Security-Policy")
             .attr(
                 "content",
-                "default-src 'none'; img-src file: data:; style-src file: 'unsafe-inline'; font-src file: data:; script-src 'unsafe-inline'",
+                "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'unsafe-inline'",
             )
         document.head().appendElement("meta").attr("name", "viewport")
             .attr("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no")
@@ -313,7 +321,7 @@ class ReaderController(
     }
 
     private fun currentSpineProgress(): Float =
-        if (pageCount <= 1) 0f else (page.toFloat() / pageCount).coerceIn(0f, 1f)
+        if (completed) 1f else if (pageCount <= 1) 0f else (page.toFloat() / pageCount).coerceIn(0f, 1f)
 
     private fun emitPosition(local: Float) {
         onPositionChanged(
@@ -327,13 +335,59 @@ class ReaderController(
     }
 
     private fun overallProgress(local: Float): Float {
-        val total = totalWeight().toFloat()
-        val before = epub.spine.take(spineIndex).sumOf { it.file.length().coerceAtLeast(1L) }
-        val current = epub.spine[spineIndex].file.length().coerceAtLeast(1L)
-        return ((before + current * local) / total).coerceIn(0f, 1f)
+        return ReadingProgress.overall(spineWeights, spineIndex, local)
     }
 
-    private fun totalWeight(): Long = epub.spine.sumOf { it.file.length().coerceAtLeast(1L) }.coerceAtLeast(1L)
+    private fun chapterBaseUrl(chapter: File): String {
+        val parent = (chapter.parentFile ?: contentRoot).canonicalFile
+        val relative = parent.relativeTo(contentRoot).invariantSeparatorsPath
+        val encoded = relative.split('/').filter(String::isNotEmpty).joinToString("/") { Uri.encode(it) }
+        return "$LOCAL_ORIGIN/$BOOK_PATH${if (encoded.isEmpty()) "" else "$encoded/"}"
+    }
+
+    private fun interceptResource(uri: Uri): WebResourceResponse? {
+        val scheme = uri.scheme?.lowercase()
+        if (scheme == "https" && uri.host.equals(LOCAL_HOST, ignoreCase = true)) {
+            val path = uri.path.orEmpty()
+            if (!path.startsWith("/$BOOK_PATH")) return blockedResponse(404, "Not Found")
+            val relative = path.removePrefix("/$BOOK_PATH")
+            val resource = EpubResourceResolver.resolve(contentRoot, relative)
+                ?: return blockedResponse(404, "Not Found")
+            val mimeType = resourceMimeType(resource)
+            val encoding = if (
+                mimeType.startsWith("text/") ||
+                mimeType == "application/xhtml+xml" ||
+                mimeType == "application/xml"
+            ) "UTF-8" else null
+            return WebResourceResponse(mimeType, encoding, resource.inputStream().buffered())
+        }
+        return if (scheme in setOf("http", "https", "file", "content")) {
+            blockedResponse(403, "Forbidden")
+        } else null
+    }
+
+    private fun resourceMimeType(file: File): String = when (file.extension.lowercase()) {
+        "css" -> "text/css"
+        "html", "htm" -> "text/html"
+        "xhtml" -> "application/xhtml+xml"
+        "svg" -> "image/svg+xml"
+        "xml", "opf", "ncx" -> "application/xml"
+        "ttf" -> "font/ttf"
+        "otf" -> "font/otf"
+        "woff" -> "font/woff"
+        "woff2" -> "font/woff2"
+        else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
+            ?: "application/octet-stream"
+    }
+
+    private fun blockedResponse(statusCode: Int, reason: String) = WebResourceResponse(
+        "text/plain",
+        "UTF-8",
+        statusCode,
+        reason,
+        mapOf("Cache-Control" to "no-store"),
+        ByteArrayInputStream(ByteArray(0)),
+    )
 
     private fun evaluate(script: String) {
         webView?.post { webView?.evaluateJavascript(script, null) }
@@ -387,6 +441,10 @@ class ReaderController(
     }
 
     private companion object {
+        const val LOCAL_HOST = "appassets.androidplatform.net"
+        const val LOCAL_ORIGIN = "https://$LOCAL_HOST"
+        const val BOOK_PATH = "book/"
+
         val PAGINATION_SCRIPT = """
             (() => {
               const flow = document.body;

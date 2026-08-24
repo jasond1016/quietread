@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.quietread.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.quietread.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
 
@@ -34,6 +34,7 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        jniLibs.keepDebugSymbols += "**/libandroidx.graphics.path.so"
     }
 }
 

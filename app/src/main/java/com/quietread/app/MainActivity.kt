@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.core.view.WindowCompat
 import com.quietread.app.data.ReaderTheme
 import com.quietread.app.ui.LibraryScreen
 import com.quietread.app.ui.QuietReadTheme
@@ -55,12 +55,8 @@ class MainActivity : ComponentActivity() {
             } else systemDark
             SideEffect {
                 val barColor = if (dark) 0xFF171916.toInt() else 0xFFF5F1E8.toInt()
-                window.statusBarColor = barColor
-                window.navigationBarColor = barColor
-                WindowCompat.getInsetsController(window, window.decorView).apply {
-                    isAppearanceLightStatusBars = !dark
-                    isAppearanceLightNavigationBars = !dark
-                }
+                val style = if (dark) SystemBarStyle.dark(barColor) else SystemBarStyle.light(barColor, barColor)
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
             }
             QuietReadTheme(dark = dark) {
                 val snackbar = remember { SnackbarHostState() }
@@ -114,6 +110,11 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleExternalIntent(intent)
+    }
+
+    override fun onStop() {
+        viewModel.flushPosition()
+        super.onStop()
     }
 
     private fun handleExternalIntent(externalIntent: Intent?) {
