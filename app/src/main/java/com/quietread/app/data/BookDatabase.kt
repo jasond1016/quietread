@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.database.sqlite.transaction
 
 internal class BookDatabase(
     context: Context,
@@ -124,12 +125,8 @@ internal class BookDatabase(
 
     fun insertAnnotations(annotations: List<BookAnnotation>) {
         if (annotations.isEmpty()) return
-        writableDatabase.beginTransaction()
-        try {
+        writableDatabase.transaction {
             annotations.forEach { writableDatabase.insertOrThrow("annotations", null, it.values()) }
-            writableDatabase.setTransactionSuccessful()
-        } finally {
-            writableDatabase.endTransaction()
         }
     }
 
