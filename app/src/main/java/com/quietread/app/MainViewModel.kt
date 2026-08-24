@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quietread.app.data.BookRecord
 import com.quietread.app.data.BookAnnotation
+import com.quietread.app.data.ReadingSelection
 import com.quietread.app.data.BookRepository
 import com.quietread.app.data.ImportOutcome
 import com.quietread.app.data.ReadingPosition
@@ -138,6 +139,15 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
                 }
                 .onFailure { error ->
                     mutableState.value = mutableState.value.copy(message = error.message ?: "无法更新书签")
+                }
+        }
+    }
+
+    fun addHighlight(bookId: String, selection: ReadingSelection) {
+        viewModelScope.launch {
+            runCatching { repository.addHighlight(bookId, selection) }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "无法保存划线")
                 }
         }
     }

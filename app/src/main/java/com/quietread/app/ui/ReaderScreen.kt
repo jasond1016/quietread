@@ -23,6 +23,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -54,6 +55,7 @@ import com.quietread.app.data.ParagraphStyle
 import com.quietread.app.data.ReaderSettings
 import com.quietread.app.data.ReaderTheme
 import com.quietread.app.data.ReadingPosition
+import com.quietread.app.data.ReadingSelection
 import com.quietread.app.epub.EpubPackage
 import kotlin.math.roundToInt
 import com.quietread.app.epub.ReadingStats
@@ -73,6 +75,7 @@ fun ReaderScreen(
     onBack: () -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
     onToggleBookmark: (ReadingPosition) -> Unit,
+    onAddHighlight: (ReadingSelection) -> Unit,
     onFontScaleChanged: (Float) -> Unit,
     onThemeChanged: (ReaderTheme) -> Unit,
     onParagraphStyleChanged: (ParagraphStyle) -> Unit,
@@ -92,6 +95,7 @@ fun ReaderScreen(
             ),
         )
     }
+    var selection by remember(book.id) { mutableStateOf<ReadingSelection?>(null) }
     var renderState by remember {
         mutableStateOf(
             ReaderRenderState(
@@ -123,6 +127,7 @@ fun ReaderScreen(
             initialSpineProgress = book.lastSpineProgress,
             initialLocator = book.lastLocator,
             settings = settings,
+            annotations = annotations,
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
@@ -132,6 +137,10 @@ fun ReaderScreen(
             onCenterTap = { controlsVisible = !controlsVisible },
             onFootnoteOpened = { controlsVisible = false },
             onBookmarkGesture = { onToggleBookmark(currentPosition) },
+            onSelectionChanged = {
+                selection = it
+                if (it != null) controlsVisible = false
+            },
             onPositionChanged = {
                 currentPosition = it
                 onPositionChanged(it)
@@ -226,6 +235,30 @@ fun ReaderScreen(
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.FormatSize, contentDescription = "阅读设置", tint = foreground)
                     }
+                }
+            }
+        }
+
+        selection?.let { selected ->
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+                tonalElevation = 8.dp,
+                shadowElevation = 8.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        onAddHighlight(selected)
+                        controller?.clearSelection()
+                        selection = null
+                    }) { Text("划线") }
+                    TextButton(onClick = {
+                        controller?.clearSelection()
+                        selection = null
+                    }) { Text("取消") }
                 }
             }
         }

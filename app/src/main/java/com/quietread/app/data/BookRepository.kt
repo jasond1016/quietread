@@ -161,6 +161,27 @@ class BookRepository(private val context: Context) {
         }
     }
 
+    suspend fun addHighlight(bookId: String, selection: ReadingSelection) = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            val now = System.currentTimeMillis()
+            database.insertAnnotation(
+                BookAnnotation(
+                    id = UUID.randomUUID().toString(),
+                    bookId = bookId,
+                    type = AnnotationType.HIGHLIGHT,
+                    spineIndex = selection.spineIndex,
+                    startLocator = selection.start,
+                    endLocator = selection.end,
+                    selectedText = selection.text.trim().take(20_000),
+                    color = DEFAULT_HIGHLIGHT_COLOR,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+            refreshAnnotations()
+        }
+    }
+
     suspend fun delete(book: BookRecord) = withContext(Dispatchers.IO) {
         val stagedDirectory = mutationMutex.withLock {
             val root = booksRoot.canonicalFile
@@ -267,5 +288,6 @@ class BookRepository(private val context: Context) {
         const val MAX_EXTRACTED_BYTES = 512L * 1024L * 1024L
         const val MIN_FREE_BYTES = 64L * 1024L * 1024L
         const val PENDING_DELETE_PREFIX = ".deleting-"
+        const val DEFAULT_HIGHLIGHT_COLOR = 0xFFF1C75B.toInt()
     }
 }

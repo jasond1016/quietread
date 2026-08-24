@@ -21,11 +21,16 @@ import com.quietread.app.data.ReaderTheme
 import com.quietread.app.data.ParagraphStyle
 import com.quietread.app.data.ReadingLocator
 import com.quietread.app.data.ReadingPosition
+import com.quietread.app.data.BookAnnotation
+import com.quietread.app.data.AnnotationType
+import com.quietread.app.data.ReadingSelection
 import com.quietread.app.epub.EpubPackage
 import com.quietread.app.epub.EpubResourceResolver
 import com.quietread.app.epub.ReadingProgress
 import org.jsoup.Jsoup
 import org.jsoup.nodes.DataNode
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.URI
@@ -44,9 +49,11 @@ class ReaderController(
     private val initialSpineProgress: Float,
     initialLocator: ReadingLocator?,
     initialSettings: ReaderSettings,
+    initialAnnotations: List<BookAnnotation>,
 ) {
     private var webView: WebView? = null
     private var settings = initialSettings
+    private var annotations = initialAnnotations
     private var spineIndex = initialSpineIndex.coerceIn(epub.spine.indices)
     private var page = 0
     private var pageCount = 1
@@ -62,6 +69,7 @@ class ReaderController(
     var onCenterTap: () -> Unit = {}
     var onFootnoteOpened: () -> Unit = {}
     var onBookmarkGesture: () -> Unit = {}
+    var onSelectionChanged: (ReadingSelection?) -> Unit = {}
     var onPositionChanged: (ReadingPosition) -> Unit = {}
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -101,6 +109,17 @@ class ReaderController(
         pendingFragment = null
         pendingLocator = currentLocator
         loadCurrentChapter()
+    }
+
+    fun updateAnnotations(newAnnotations: List<BookAnnotation>) {
+        if (annotations == newAnnotations) return
+        annotations = newAnnotations
+        applyHighlights()
+    }
+
+    fun clearSelection() {
+        evaluate("window.getSelection()?.removeAllRanges();")
+        onSelectionChanged(null)
     }
 
     fun nextPage() {
@@ -239,6 +258,10 @@ class ReaderController(
             a { color: $foreground !important; text-decoration-color: $muted !important; }
             p { margin-block: 0.55em; }
             $paragraphRule
+            ::highlight(quietread-highlight) {
+              background-color: rgba(241, 199, 91, 0.42);
+              text-decoration: underline rgba(190, 137, 24, 0.85) 1.5px;
+            }
             .footnote-content,
             [role="doc-footnote"],
             [epub\:type~="footnote"] { display: none !important; }
@@ -292,6 +315,7 @@ class ReaderController(
         pendingFragment = null
         pendingProgress = 0f
         pendingLocator = null
+        applyHighlights()
         if (fragment != null) {
             evaluate("window.qrGoAnchor(${jsString(fragment)});")
         } else if (locator != null) {
@@ -307,6 +331,28 @@ class ReaderController(
             val target = floor(progress.coerceIn(0f, 0.999999f) * pageCount).toInt().coerceIn(0, pageCount - 1)
             evaluate("window.qrGoPage($target);")
         }
+    }
+
+    private fun applyHighlights() {
+        val items = JSONArray()
+        annotations.asSequence()
+            .filter { it.spineIndex == spineIndex && it.type != AnnotationType.BOOKMARK && it.endLocator != null }
+            .forEach { annotation ->
+                items.put(
+                    JSONObject().apply {
+                        put("id", annotation.id)
+                        put("start", locatorJson(annotation.startLocator))
+                        put("end", locatorJson(annotation.endLocator!!))
+                    },
+                )
+            }
+        evaluate("window.qrApplyHighlights?.($items);")
+    }
+
+    private fun locatorJson(locator: ReadingLocator) = JSONObject().apply {
+        put("id", locator.elementId.orEmpty())
+        put("path", locator.elementPath)
+        put("offset", locator.textOffset)
     }
 
     private fun handlePageChanged(newPage: Int, locator: ReadingLocator?) {
@@ -458,6 +504,28 @@ class ReaderController(
         fun toggleBookmark() = view.post { onBookmarkGesture() }
 
         @JavascriptInterface
+        fun selectionChanged(
+            text: String,
+            startId: String,
+            startPath: String,
+            startOffset: Int,
+            endId: String,
+            endPath: String,
+            endOffset: Int,
+        ) = view.post {
+            val start = ReadingLocator.create(startId, startPath, startOffset)
+            val end = ReadingLocator.create(endId, endPath, endOffset)
+            onSelectionChanged(
+                if (start != null && end != null && text.isNotBlank()) {
+                    ReadingSelection(spineIndex, start, end, text.take(20_000))
+                } else null,
+            )
+        }
+
+        @JavascriptInterface
+        fun selectionCleared() = view.post { onSelectionChanged(null) }
+
+        @JavascriptInterface
         fun turnPage(delta: Int) = view.post {
             if (delta > 0) nextPage() else if (delta < 0) previousPage()
         }
@@ -580,6 +648,90 @@ class ReaderController(
                 }
                 return 0;
               };
+
+              const selectionPoint = (node, offset) => {
+                const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+                const block = element &&
+                  (element.closest('p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,figcaption,div,section,article') || element);
+                if (!block || !flow.contains(block)) return null;
+                const path = locatorPath(block);
+                if (!path) return null;
+                let textOffset = 0;
+                if (node.nodeType === Node.TEXT_NODE) {
+                  textOffset = textOffsetWithin(block, node, offset);
+                } else {
+                  const prefix = document.createRange();
+                  prefix.selectNodeContents(block);
+                  try { prefix.setEnd(node, offset); textOffset = prefix.toString().length; }
+                  catch (_) { textOffset = 0; }
+                }
+                return { id: block.id || '', path, offset: textOffset };
+              };
+
+              const pointForLocator = (locator) => {
+                const element = locatorElement(locator.id, locator.path);
+                if (!element) return null;
+                let remaining = Math.max(0, Number(locator.offset) || 0);
+                const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+                let last = null;
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  last = node;
+                  if (remaining <= node.length) return { node, offset: remaining };
+                  remaining -= node.length;
+                }
+                return last ? { node: last, offset: last.length } : null;
+              };
+
+              window.qrApplyHighlights = (items) => {
+                if (!window.CSS || !CSS.highlights || typeof Highlight === 'undefined') return;
+                const ranges = [];
+                (Array.isArray(items) ? items : []).forEach((item) => {
+                  const start = pointForLocator(item.start);
+                  const end = pointForLocator(item.end);
+                  if (!start || !end) return;
+                  try {
+                    const range = document.createRange();
+                    range.setStart(start.node, start.offset);
+                    range.setEnd(end.node, end.offset);
+                    if (!range.collapsed) ranges.push(range);
+                  } catch (_) {}
+                });
+                CSS.highlights.delete('quietread-highlight');
+                if (ranges.length) CSS.highlights.set('quietread-highlight', new Highlight(...ranges));
+              };
+
+              let selectionTimer = 0;
+              document.addEventListener('selectionchange', () => {
+                window.clearTimeout(selectionTimer);
+                selectionTimer = window.setTimeout(() => {
+                  const selection = window.getSelection();
+                  if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) {
+                    QuietRead.selectionCleared();
+                    return;
+                  }
+                  const range = selection.getRangeAt(0);
+                  if (!flow.contains(range.startContainer) || !flow.contains(range.endContainer)) {
+                    QuietRead.selectionCleared();
+                    return;
+                  }
+                  const start = selectionPoint(range.startContainer, range.startOffset);
+                  const end = selectionPoint(range.endContainer, range.endOffset);
+                  const text = selection.toString();
+                  if (!start || !end || !text.trim()) {
+                    QuietRead.selectionCleared();
+                    return;
+                  }
+                  QuietRead.selectionChanged(
+                    text,
+                    start.id,
+                    start.path,
+                    start.offset,
+                    end.id,
+                    end.path,
+                    end.offset
+                  );
+                }, 80);
+              });
 
               const captureLocator = () => {
                 const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
@@ -805,28 +957,34 @@ fun EpubReaderView(
     initialSpineProgress: Float,
     initialLocator: ReadingLocator?,
     settings: ReaderSettings,
+    annotations: List<BookAnnotation>,
     modifier: Modifier = Modifier,
     onController: (ReaderController) -> Unit,
     onStateChanged: (ReaderRenderState) -> Unit,
     onCenterTap: () -> Unit,
     onFootnoteOpened: () -> Unit,
     onBookmarkGesture: () -> Unit,
+    onSelectionChanged: (ReadingSelection?) -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
 ) {
     val controller = remember(epub) {
-        ReaderController(epub, initialSpineIndex, initialSpineProgress, initialLocator, settings)
+        ReaderController(epub, initialSpineIndex, initialSpineProgress, initialLocator, settings, annotations)
     }
     controller.onStateChanged = onStateChanged
     controller.onCenterTap = onCenterTap
     controller.onFootnoteOpened = onFootnoteOpened
     controller.onBookmarkGesture = onBookmarkGesture
+    controller.onSelectionChanged = onSelectionChanged
     controller.onPositionChanged = onPositionChanged
     SideEffect { onController(controller) }
 
     AndroidView(
         factory = controller::createWebView,
         modifier = modifier,
-        update = { controller.updateSettings(settings) },
+        update = {
+            controller.updateSettings(settings)
+            controller.updateAnnotations(annotations)
+        },
     )
     DisposableEffect(controller) {
         onDispose(controller::destroy)

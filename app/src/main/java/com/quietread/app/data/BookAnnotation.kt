@@ -15,3 +15,10 @@ data class BookAnnotation(
     val createdAt: Long,
     val updatedAt: Long,
 )
+
+data class ReadingSelection(
+    val spineIndex: Int,
+    val start: ReadingLocator,
+    val end: ReadingLocator,
+    val text: String,
+)
