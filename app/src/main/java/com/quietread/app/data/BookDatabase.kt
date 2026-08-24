@@ -9,7 +9,12 @@ import android.database.sqlite.SQLiteOpenHelper
 internal class BookDatabase(
     context: Context,
     databaseName: String = "quietread.db",
-) : SQLiteOpenHelper(context, databaseName, null, 3) {
+) : SQLiteOpenHelper(context, databaseName, null, 4) {
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        db.setForeignKeyConstraintsEnabled(true)
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -35,6 +40,7 @@ internal class BookDatabase(
             """.trimIndent(),
         )
         db.execSQL("CREATE INDEX books_recent ON books(last_opened_at DESC, imported_at DESC)")
+        createAnnotationsTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -46,6 +52,7 @@ internal class BookDatabase(
         if (oldVersion < 3) {
             db.execSQL("ALTER TABLE books ADD COLUMN total_reading_ms INTEGER NOT NULL DEFAULT 0")
         }
+        if (oldVersion < 4) createAnnotationsTable(db)
     }
 
     fun allBooks(): List<BookRecord> = readableDatabase.query(
@@ -87,6 +94,39 @@ internal class BookDatabase(
 
     fun delete(id: String) {
         writableDatabase.delete("books", "id = ?", arrayOf(id))
+    }
+
+    fun allAnnotations(): List<BookAnnotation> = readableDatabase.query(
+        "annotations", null, null, null, null, null, "created_at DESC",
+    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.toAnnotation()) } }
+
+    private fun createAnnotationsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS annotations (
+                id TEXT PRIMARY KEY,
+                book_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                spine_index INTEGER NOT NULL,
+                start_locator_id TEXT,
+                start_locator_path TEXT NOT NULL,
+                start_locator_offset INTEGER NOT NULL,
+                end_locator_id TEXT,
+                end_locator_path TEXT,
+                end_locator_offset INTEGER,
+                selected_text TEXT,
+                note TEXT,
+                color INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS annotations_book_position " +
+                "ON annotations(book_id, spine_index, start_locator_path, start_locator_offset)",
+        )
     }
 
     private fun BookRecord.values() = ContentValues().apply {
@@ -133,10 +173,35 @@ internal class BookDatabase(
         lastOpenedAt = long("last_opened_at"),
     )
 
+    private fun Cursor.toAnnotation() = BookAnnotation(
+        id = string("id"),
+        bookId = string("book_id"),
+        type = runCatching { AnnotationType.valueOf(string("type")) }.getOrDefault(AnnotationType.BOOKMARK),
+        spineIndex = int("spine_index"),
+        startLocator = ReadingLocator.create(
+            nullableString("start_locator_id"),
+            string("start_locator_path"),
+            int("start_locator_offset"),
+        ) ?: ReadingLocator(null, ".", 0),
+        endLocator = nullableString("end_locator_path")?.let { path ->
+            ReadingLocator.create(
+                nullableString("end_locator_id"),
+                path,
+                nullableInt("end_locator_offset") ?: 0,
+            )
+        },
+        selectedText = nullableString("selected_text"),
+        note = nullableString("note"),
+        color = nullableInt("color"),
+        createdAt = long("created_at"),
+        updatedAt = long("updated_at"),
+    )
+
     private fun Cursor.index(name: String) = getColumnIndexOrThrow(name)
     private fun Cursor.string(name: String) = getString(index(name))
     private fun Cursor.nullableString(name: String) = index(name).let { if (isNull(it)) null else getString(it) }
     private fun Cursor.int(name: String) = getInt(index(name))
     private fun Cursor.float(name: String) = getFloat(index(name))
     private fun Cursor.long(name: String) = getLong(index(name))
+    private fun Cursor.nullableInt(name: String) = index(name).let { if (isNull(it)) null else getInt(it) }
 }

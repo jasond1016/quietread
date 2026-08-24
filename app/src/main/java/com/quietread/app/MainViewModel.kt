@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quietread.app.data.BookRecord
+import com.quietread.app.data.BookAnnotation
 import com.quietread.app.data.BookRepository
 import com.quietread.app.data.ImportOutcome
 import com.quietread.app.data.ReadingPosition
@@ -24,6 +25,7 @@ sealed interface AppScreen {
 
 data class MainUiState(
     val books: List<BookRecord> = emptyList(),
+    val annotations: List<BookAnnotation> = emptyList(),
     val screen: AppScreen = AppScreen.Library,
     val busy: Boolean = false,
     val message: String? = null,
@@ -44,6 +46,11 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
                     books.firstOrNull { it.id == current.book.id }?.let { current.copy(book = it) } ?: current
                 } else current
                 mutableState.value = mutableState.value.copy(books = books, screen = updatedScreen)
+            }
+        }
+        viewModelScope.launch {
+            repository.annotations.collectLatest { annotations ->
+                mutableState.value = mutableState.value.copy(annotations = annotations)
             }
         }
     }

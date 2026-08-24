@@ -24,7 +24,7 @@ class BookDatabaseMigrationTest {
 
             BookDatabase(context, databaseName).use { helper ->
                 val database = helper.writableDatabase
-                assertEquals(3, database.version)
+                assertEquals(4, database.version)
 
                 val columns = database.rawQuery("PRAGMA table_info(books)", null).use { cursor ->
                     buildSet {
@@ -36,6 +36,12 @@ class BookDatabaseMigrationTest {
                 assertTrue("last_locator_path" in columns)
                 assertTrue("last_locator_offset" in columns)
                 assertTrue("total_reading_ms" in columns)
+
+                val annotationTables = database.rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='annotations'",
+                    null,
+                ).use { cursor -> cursor.moveToFirst() }
+                assertTrue(annotationTables)
 
                 database.rawQuery(
                     "SELECT id, last_locator_path, last_locator_offset FROM books",

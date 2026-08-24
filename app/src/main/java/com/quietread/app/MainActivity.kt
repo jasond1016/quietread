@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
                                 ReaderScreen(
                                     book = screen.book,
                                     epub = screen.epub,
+                                    annotations = state.annotations.filter { it.bookId == screen.book.id },
                                     settings = readerSettings,
                                     onBack = viewModel::closeReader,
                                     onPositionChanged = { viewModel.updatePosition(screen.book.id, it) },

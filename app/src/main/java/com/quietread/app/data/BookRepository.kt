@@ -32,12 +32,14 @@ sealed interface ImportOutcome {
 class BookRepository(private val context: Context) {
     private val database = BookDatabase(context)
     private val mutableBooks = MutableStateFlow(database.allBooks())
+    private val mutableAnnotations = MutableStateFlow(database.allAnnotations())
     private val booksRoot = File(context.filesDir, "books").apply { mkdirs() }
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutationMutex = Mutex()
     private val positionUpdates = Channel<PositionUpdate>(Channel.UNLIMITED)
 
     val books: StateFlow<List<BookRecord>> = mutableBooks
+    val annotations: StateFlow<List<BookAnnotation>> = mutableAnnotations
 
     init {
         repositoryScope.launch {
@@ -148,6 +150,7 @@ class BookRepository(private val context: Context) {
             try {
                 database.delete(book.id)
                 refresh()
+                refreshAnnotations()
                 staged
             } catch (error: Exception) {
                 staged?.renameTo(bookDirectory)
@@ -223,6 +226,10 @@ class BookRepository(private val context: Context) {
 
     private fun refresh() {
         mutableBooks.value = database.allBooks()
+    }
+
+    private fun refreshAnnotations() {
+        mutableAnnotations.value = database.allAnnotations()
     }
 
     private data class PositionUpdate(val bookId: String, val position: ReadingPosition)

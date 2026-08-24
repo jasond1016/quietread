@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -42,6 +43,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.quietread.app.data.BookRecord
+import com.quietread.app.data.BookAnnotation
+import com.quietread.app.data.AnnotationType
 import com.quietread.app.data.ParagraphStyle
 import com.quietread.app.data.ReaderSettings
 import com.quietread.app.data.ReaderTheme
@@ -55,6 +58,7 @@ import com.quietread.app.epub.ReadingStats
 fun ReaderScreen(
     book: BookRecord,
     epub: EpubPackage,
+    annotations: List<BookAnnotation>,
     settings: ReaderSettings,
     onBack: () -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
@@ -66,6 +70,7 @@ fun ReaderScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var showContents by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showAnnotations by remember { mutableStateOf(false) }
     var renderState by remember {
         mutableStateOf(
             ReaderRenderState(
@@ -175,6 +180,9 @@ fun ReaderScreen(
                     IconButton(onClick = { showContents = true }) {
                         Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "目录", tint = foreground)
                     }
+                    IconButton(onClick = { showAnnotations = true }) {
+                        Icon(Icons.Filled.Bookmarks, contentDescription = "标记", tint = foreground)
+                    }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.FormatSize, contentDescription = "阅读设置", tint = foreground)
                     }
@@ -277,6 +285,78 @@ fun ReaderScreen(
                     ) { onParagraphStyleChanged(ParagraphStyle.INDENTED) }
                 }
                 Spacer(Modifier.height(28.dp))
+            }
+        }
+    }
+
+    if (showAnnotations) {
+        AnnotationSheet(
+            annotations = annotations,
+            epub = epub,
+            onDismiss = { showAnnotations = false },
+        )
+    }
+}
+
+private enum class AnnotationFilter { ALL, BOOKMARK, HIGHLIGHT, THOUGHT }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnnotationSheet(
+    annotations: List<BookAnnotation>,
+    epub: EpubPackage,
+    onDismiss: () -> Unit,
+) {
+    var filter by remember { mutableStateOf(AnnotationFilter.ALL) }
+    val visible = annotations.filter { annotation ->
+        when (filter) {
+            AnnotationFilter.ALL -> true
+            AnnotationFilter.BOOKMARK -> annotation.type == AnnotationType.BOOKMARK
+            AnnotationFilter.HIGHLIGHT -> annotation.type == AnnotationType.HIGHLIGHT
+            AnnotationFilter.THOUGHT -> annotation.type == AnnotationType.THOUGHT
+        }
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "标记",
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            AnnotationFilter.entries.forEach { item ->
+                val label = when (item) {
+                    AnnotationFilter.ALL -> "全部"
+                    AnnotationFilter.BOOKMARK -> "书签"
+                    AnnotationFilter.HIGHLIGHT -> "划线"
+                    AnnotationFilter.THOUGHT -> "想法"
+                }
+                if (item == filter) Button(onClick = { filter = item }) { Text(label) }
+                else TextButton(onClick = { filter = item }) { Text(label) }
+            }
+        }
+        if (visible.isEmpty()) {
+            Text("这里还没有标记", modifier = Modifier.padding(24.dp))
+        } else {
+            LazyColumn(Modifier.fillMaxWidth()) {
+                itemsIndexed(visible, key = { _, item -> item.id }) { _, annotation ->
+                    val chapter = epub.toc.lastOrNull { it.spineIndex <= annotation.spineIndex }?.title
+                        ?: "第 ${annotation.spineIndex + 1} 章"
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp)) {
+                        Text(chapter, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            annotation.selectedText ?: if (annotation.type == AnnotationType.BOOKMARK) "书签" else "标记",
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                        )
+                        annotation.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                }
             }
         }
     }
