@@ -63,6 +63,34 @@ class MainActivity : ComponentActivity() {
                 val picker = androidx.activity.compose.rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> uri?.let(viewModel::importBook) }
+                val markdownExporter = androidx.activity.compose.rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("text/markdown"),
+                ) { uri ->
+                    val reader = state.screen as? AppScreen.Reader
+                    if (uri != null && reader != null) {
+                        viewModel.exportMarkdown(
+                            uri,
+                            reader.book,
+                            reader.epub,
+                            state.annotations.filter { it.bookId == reader.book.id },
+                        )
+                    }
+                }
+                val backupExporter = androidx.activity.compose.rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/json"),
+                ) { uri ->
+                    val reader = state.screen as? AppScreen.Reader
+                    if (uri != null && reader != null) {
+                        viewModel.exportAnnotationBackup(
+                            uri,
+                            reader.book,
+                            state.annotations.filter { it.bookId == reader.book.id },
+                        )
+                    }
+                }
+                val backupImporter = androidx.activity.compose.rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument(),
+                ) { uri -> uri?.let(viewModel::restoreAnnotationBackup) }
 
                 LaunchedEffect(state.message) {
                     state.message?.let {
@@ -96,6 +124,15 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onUpdateThought = viewModel::updateThought,
                                     onDeleteAnnotation = viewModel::deleteAnnotation,
+                                    onExportMarkdown = {
+                                        markdownExporter.launch("${safeFileName(screen.book.title)}-标记.md")
+                                    },
+                                    onExportBackup = {
+                                        backupExporter.launch("${safeFileName(screen.book.title)}-标记备份.json")
+                                    },
+                                    onRestoreBackup = {
+                                        backupImporter.launch(arrayOf("application/json", "text/plain"))
+                                    },
                                     onFontScaleChanged = applicationContainer.readerPreferences::setFontScale,
                                     onThemeChanged = applicationContainer.readerPreferences::setTheme,
                                     onParagraphStyleChanged =
@@ -152,3 +189,5 @@ class MainActivity : ComponentActivity() {
         return extra ?: clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
     }
 }
+
+private fun safeFileName(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|]"), "-").ifBlank { "静阅" }

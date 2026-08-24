@@ -81,6 +81,9 @@ fun ReaderScreen(
     onAddThought: (ReadingSelection, String) -> Unit,
     onUpdateThought: (String, String) -> Unit,
     onDeleteAnnotation: (String) -> Unit,
+    onExportMarkdown: () -> Unit,
+    onExportBackup: () -> Unit,
+    onRestoreBackup: () -> Unit,
     onFontScaleChanged: (Float) -> Unit,
     onThemeChanged: (ReaderTheme) -> Unit,
     onParagraphStyleChanged: (ParagraphStyle) -> Unit,
@@ -370,6 +373,9 @@ fun ReaderScreen(
                 thoughtText = annotation.note.orEmpty()
             },
             onDelete = onDeleteAnnotation,
+            onExportMarkdown = onExportMarkdown,
+            onExportBackup = onExportBackup,
+            onRestoreBackup = onRestoreBackup,
         )
     }
 
@@ -531,6 +537,9 @@ private fun AnnotationSheet(
     onSelected: (BookAnnotation) -> Unit,
     onEdit: (BookAnnotation) -> Unit,
     onDelete: (String) -> Unit,
+    onExportMarkdown: () -> Unit,
+    onExportBackup: () -> Unit,
+    onRestoreBackup: () -> Unit,
 ) {
     var filter by remember { mutableStateOf(AnnotationFilter.ALL) }
     var sort by remember { mutableStateOf(AnnotationSort.POSITION) }
@@ -574,8 +583,13 @@ private fun AnnotationSheet(
         }
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
+            Row {
+                TextButton(onClick = onExportMarkdown) { Text("导出") }
+                TextButton(onClick = onExportBackup) { Text("备份") }
+                TextButton(onClick = onRestoreBackup) { Text("恢复") }
+            }
             TextButton(onClick = {
                 sort = if (sort == AnnotationSort.POSITION) AnnotationSort.CREATED else AnnotationSort.POSITION
             }) {

@@ -122,6 +122,17 @@ internal class BookDatabase(
         writableDatabase.insertOrThrow("annotations", null, annotation.values())
     }
 
+    fun insertAnnotations(annotations: List<BookAnnotation>) {
+        if (annotations.isEmpty()) return
+        writableDatabase.beginTransaction()
+        try {
+            annotations.forEach { writableDatabase.insertOrThrow("annotations", null, it.values()) }
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+    }
+
     fun deleteAnnotation(id: String) {
         writableDatabase.delete("annotations", "id = ?", arrayOf(id))
     }

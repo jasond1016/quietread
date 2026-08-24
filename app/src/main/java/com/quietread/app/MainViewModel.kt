@@ -179,6 +179,36 @@ class MainViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
+    fun exportMarkdown(uri: Uri, book: BookRecord, epub: EpubPackage, annotations: List<BookAnnotation>) {
+        viewModelScope.launch {
+            runCatching { repository.exportMarkdown(uri, book, epub, annotations) }
+                .onSuccess { mutableState.value = mutableState.value.copy(message = "标记已导出") }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "导出失败")
+                }
+        }
+    }
+
+    fun exportAnnotationBackup(uri: Uri, book: BookRecord, annotations: List<BookAnnotation>) {
+        viewModelScope.launch {
+            runCatching { repository.exportAnnotationBackup(uri, book, annotations) }
+                .onSuccess { mutableState.value = mutableState.value.copy(message = "标记备份已保存") }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "备份失败")
+                }
+        }
+    }
+
+    fun restoreAnnotationBackup(uri: Uri) {
+        viewModelScope.launch {
+            runCatching { repository.restoreAnnotationBackup(uri) }
+                .onSuccess { count -> mutableState.value = mutableState.value.copy(message = "已恢复 $count 条标记") }
+                .onFailure { error ->
+                    mutableState.value = mutableState.value.copy(message = error.message ?: "恢复失败")
+                }
+        }
+    }
+
     fun clearMessage() {
         mutableState.value = mutableState.value.copy(message = null)
     }

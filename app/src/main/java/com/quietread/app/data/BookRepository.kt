@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStreamWriter
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -212,6 +213,57 @@ class BookRepository(private val context: Context) {
         }
     }
 
+    suspend fun exportMarkdown(uri: Uri, book: BookRecord, epub: EpubPackage, annotations: List<BookAnnotation>) {
+        writeDocument(uri, AnnotationDocuments.markdown(book, epub, annotations))
+    }
+
+    suspend fun exportAnnotationBackup(uri: Uri, book: BookRecord, annotations: List<BookAnnotation>) {
+        writeDocument(uri, AnnotationDocuments.backup(book, annotations))
+    }
+
+    suspend fun restoreAnnotationBackup(uri: Uri): Int = withContext(Dispatchers.IO) {
+        val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+            val buffer = CharArray(8_192)
+            val output = StringBuilder()
+            while (true) {
+                val count = reader.read(buffer)
+                if (count < 0) break
+                output.append(buffer, 0, count)
+                if (output.length > MAX_BACKUP_CHARS) throw IOException("备份文件过大")
+            }
+            output.toString()
+        } ?: throw IOException("无法读取备份")
+        val book = database.bookByHash(AnnotationDocuments.backupBookHash(raw))
+            ?: throw IllegalStateException("请先导入这份备份对应的 EPUB")
+        val spineCount = loadPackage(book).spine.size
+        val restored = AnnotationDocuments.restore(raw, book.id).filter { it.spineIndex < spineCount }
+        val existing = database.allAnnotations().asSequence().filter { it.bookId == book.id }
+            .map(::annotationFingerprint).toHashSet()
+        val unique = restored.filter { annotationFingerprint(it) !in existing }
+        mutationMutex.withLock {
+            database.insertAnnotations(unique)
+            refreshAnnotations()
+        }
+        unique.size
+    }
+
+    private suspend fun writeDocument(uri: Uri, content: String) = withContext(Dispatchers.IO) {
+        val output = context.contentResolver.openOutputStream(uri, "wt")
+            ?: throw IOException("无法写入所选文件")
+        OutputStreamWriter(output, Charsets.UTF_8).use { it.write(content) }
+    }
+
+    private fun annotationFingerprint(annotation: BookAnnotation): String = listOf(
+        annotation.type.name,
+        annotation.spineIndex,
+        annotation.startLocator.elementPath,
+        annotation.startLocator.textOffset,
+        annotation.endLocator?.elementPath,
+        annotation.endLocator?.textOffset,
+        annotation.selectedText,
+        annotation.note,
+    ).joinToString("\u0000")
+
     suspend fun delete(book: BookRecord) = withContext(Dispatchers.IO) {
         val stagedDirectory = mutationMutex.withLock {
             val root = booksRoot.canonicalFile
@@ -319,5 +371,6 @@ class BookRepository(private val context: Context) {
         const val MIN_FREE_BYTES = 64L * 1024L * 1024L
         const val PENDING_DELETE_PREFIX = ".deleting-"
         const val DEFAULT_HIGHLIGHT_COLOR = 0xFFF1C75B.toInt()
+        const val MAX_BACKUP_CHARS = 5_000_000
     }
 }
