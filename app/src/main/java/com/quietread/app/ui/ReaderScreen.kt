@@ -23,6 +23,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
@@ -37,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +57,11 @@ import com.quietread.app.data.ReadingPosition
 import com.quietread.app.epub.EpubPackage
 import kotlin.math.roundToInt
 import com.quietread.app.epub.ReadingStats
+import com.quietread.app.epub.BookSearch
+import com.quietread.app.epub.BookSearchResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -224,45 +232,21 @@ fun ReaderScreen(
     }
 
     if (showContents) {
-        ModalBottomSheet(onDismissRequest = { showContents = false }) {
-            Text(
-                "目录",
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (epub.toc.isEmpty()) {
-                Text("这本书没有可用目录", modifier = Modifier.padding(24.dp))
-            } else {
-                LazyColumn(Modifier.fillMaxWidth()) {
-                    itemsIndexed(epub.toc) { _, entry ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    showContents = false
-                                    controlsVisible = false
-                                    controller?.goTo(entry.spineIndex, fragment = entry.fragment)
-                                }
-                                .padding(
-                                    start = (24 + entry.depth.coerceAtMost(3) * 18).dp,
-                                    end = 24.dp,
-                                    top = 15.dp,
-                                    bottom = 15.dp,
-                                ),
-                        ) {
-                            Text(
-                                entry.title,
-                                color = if (entry.spineIndex == renderState.spineIndex) {
-                                    MaterialTheme.colorScheme.primary
-                                } else MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
-                    }
-                }
-            }
-        }
+        ContentsAndSearchSheet(
+            epub = epub,
+            currentSpineIndex = renderState.spineIndex,
+            onDismiss = { showContents = false },
+            onTocSelected = { spine, fragment ->
+                showContents = false
+                controlsVisible = false
+                controller?.goTo(spine, fragment = fragment)
+            },
+            onSearchSelected = { result ->
+                showContents = false
+                controlsVisible = false
+                controller?.goToLocator(result.spineIndex, result.locator)
+            },
+        )
     }
 
     if (showSettings) {
@@ -332,6 +316,103 @@ fun ReaderScreen(
                 controller?.goToLocator(annotation.spineIndex, annotation.startLocator)
             },
         )
+    }
+}
+
+private enum class ContentsTab { CONTENTS, SEARCH }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ContentsAndSearchSheet(
+    epub: EpubPackage,
+    currentSpineIndex: Int,
+    onDismiss: () -> Unit,
+    onTocSelected: (Int, String?) -> Unit,
+    onSearchSelected: (BookSearchResult) -> Unit,
+) {
+    var tab by remember { mutableStateOf(ContentsTab.CONTENTS) }
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<BookSearchResult>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    LaunchedEffect(query) {
+        val requested = query.trim()
+        if (requested.isEmpty()) {
+            results = emptyList()
+            searching = false
+        } else {
+            searching = true
+            delay(250)
+            results = withContext(Dispatchers.IO) { BookSearch.search(epub, requested) }
+            searching = false
+        }
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            if (tab == ContentsTab.CONTENTS) Button(onClick = {}) { Text("目录") }
+            else TextButton(onClick = { tab = ContentsTab.CONTENTS }) { Text("目录") }
+            if (tab == ContentsTab.SEARCH) Button(onClick = {}) { Text("搜索") }
+            else TextButton(onClick = { tab = ContentsTab.SEARCH }) { Text("搜索") }
+        }
+        if (tab == ContentsTab.CONTENTS) {
+            if (epub.toc.isEmpty()) {
+                Text("这本书没有可用目录", modifier = Modifier.padding(24.dp))
+            } else {
+                LazyColumn(Modifier.fillMaxWidth()) {
+                    itemsIndexed(epub.toc) { _, entry ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { onTocSelected(entry.spineIndex, entry.fragment) }
+                                .padding(
+                                    start = (24 + entry.depth.coerceAtMost(3) * 18).dp,
+                                    end = 24.dp,
+                                    top = 15.dp,
+                                    bottom = 15.dp,
+                                ),
+                        ) {
+                            Text(
+                                entry.title,
+                                color = if (entry.spineIndex == currentSpineIndex) {
+                                    MaterialTheme.colorScheme.primary
+                                } else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                    }
+                }
+            }
+        } else {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                label = { Text("搜索本书") },
+                singleLine = true,
+            )
+            when {
+                searching -> Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+                query.isBlank() -> Text("输入关键词搜索本书内容", modifier = Modifier.padding(24.dp))
+                results.isEmpty() -> Text("没有找到相关内容", modifier = Modifier.padding(24.dp))
+                else -> LazyColumn(Modifier.fillMaxWidth()) {
+                    itemsIndexed(results) { _, result ->
+                        val chapter = epub.toc.lastOrNull { it.spineIndex <= result.spineIndex }?.title
+                            ?: "第 ${result.spineIndex + 1} 章"
+                        Column(
+                            Modifier.fillMaxWidth().clickable { onSearchSelected(result) }
+                                .padding(horizontal = 24.dp, vertical = 13.dp),
+                        ) {
+                            Text(chapter, style = MaterialTheme.typography.labelMedium)
+                            Text(result.excerpt, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                    }
+                }
+            }
+        }
     }
 }
 
