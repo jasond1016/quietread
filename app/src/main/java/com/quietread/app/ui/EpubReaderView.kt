@@ -1,6 +1,8 @@
 package com.quietread.app.ui
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Color
 import android.net.Uri
 import android.webkit.JavascriptInterface
@@ -10,6 +12,9 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.MimeTypeMap
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -43,6 +48,36 @@ data class ReaderRenderState(
     val overallProgress: Float,
 )
 
+private class SelectionWebView(context: android.content.Context) : WebView(context) {
+    override fun startActionMode(callback: ActionMode.Callback): ActionMode? =
+        super.startActionMode(SelectionActionModeCallback(callback))
+
+    override fun startActionMode(callback: ActionMode.Callback, type: Int): ActionMode? =
+        super.startActionMode(SelectionActionModeCallback(callback), type)
+
+    private class SelectionActionModeCallback(
+        private val delegate: ActionMode.Callback,
+    ) : ActionMode.Callback {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val created = delegate.onCreateActionMode(mode, menu)
+            menu.clear()
+            return created
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+            delegate.onPrepareActionMode(mode, menu)
+            menu.clear()
+            return true
+        }
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean = true
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            delegate.onDestroyActionMode(mode)
+        }
+    }
+}
+
 class ReaderController(
     private val epub: EpubPackage,
     private val initialSpineIndex: Int,
@@ -61,6 +96,7 @@ class ReaderController(
     private var pendingFragment: String? = null
     private var pendingLocator = initialLocator
     private var currentLocator: ReadingLocator? = initialLocator
+    private var currentSelection: ReadingSelection? = null
     private var completed = spineIndex == epub.spine.lastIndex && initialSpineProgress >= 0.999999f
     private val spineWeights = epub.spine.map { it.readingWeight }
     private val contentRoot = epub.contentRoot.canonicalFile
@@ -70,10 +106,13 @@ class ReaderController(
     var onFootnoteOpened: () -> Unit = {}
     var onBookmarkGesture: () -> Unit = {}
     var onSelectionChanged: (ReadingSelection?) -> Unit = {}
+    var onHighlightRequested: (ReadingSelection) -> Unit = {}
+    var onThoughtRequested: (ReadingSelection) -> Unit = {}
+    var onAnnotationDeleteRequested: (String) -> Unit = {}
     var onPositionChanged: (ReadingPosition) -> Unit = {}
 
     @SuppressLint("SetJavaScriptEnabled")
-    fun createWebView(context: android.content.Context): WebView = WebView(context).also { view ->
+    fun createWebView(context: android.content.Context): WebView = SelectionWebView(context).also { view ->
         webView = view
         view.setBackgroundColor(Color.TRANSPARENT)
         view.settings.apply {
@@ -115,9 +154,11 @@ class ReaderController(
         if (annotations == newAnnotations) return
         annotations = newAnnotations
         applyHighlights()
+        applyBookmarkState()
     }
 
     fun clearSelection() {
+        currentSelection = null
         evaluate("window.getSelection()?.removeAllRanges();")
         onSelectionChanged(null)
     }
@@ -262,6 +303,33 @@ class ReaderController(
               background-color: rgba(241, 199, 91, 0.42);
               text-decoration: underline rgba(190, 137, 24, 0.85) 1.5px;
             }
+            #quietread-selection-toolbar {
+              position: fixed !important; z-index: 2147483646 !important;
+              display: none !important; align-items: center !important;
+              max-width: calc(100vw - 16px) !important; padding: 4px 6px !important;
+              border: 1px solid $muted !important; border-radius: 12px !important;
+              background: $background !important; color: $foreground !important;
+              box-shadow: 0 5px 22px rgba(0, 0, 0, 0.28) !important;
+              white-space: nowrap !important; transform: none !important;
+            }
+            #quietread-selection-toolbar[data-open="true"] { display: flex !important; }
+            #quietread-selection-toolbar button {
+              border: 0 !important; padding: 9px 11px !important; margin: 0 !important;
+              background: transparent !important; color: $foreground !important;
+              font: 500 14px/1 sans-serif !important; white-space: nowrap !important;
+            }
+            #quietread-selection-toolbar button + button {
+              border-left: 1px solid color-mix(in srgb, $muted 32%, transparent) !important;
+            }
+            #quietread-bookmark-pull-indicator {
+              position: fixed !important; z-index: 0 !important; top: 10px !important; left: 50% !important;
+              width: 38px !important; height: 38px !important; margin-left: -19px !important;
+              display: flex !important; align-items: center !important; justify-content: center !important;
+              border-radius: 19px !important; background: $background !important; color: $foreground !important;
+              box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16) !important;
+              font: 20px/1 sans-serif !important; opacity: 0 !important;
+              transform: scale(0.72) !important; transition: opacity 120ms, transform 120ms !important;
+            }
             .footnote-content,
             [role="doc-footnote"],
             [epub\:type~="footnote"] { display: none !important; }
@@ -316,6 +384,7 @@ class ReaderController(
         pendingProgress = 0f
         pendingLocator = null
         applyHighlights()
+        applyBookmarkState()
         if (fragment != null) {
             evaluate("window.qrGoAnchor(${jsString(fragment)});")
         } else if (locator != null) {
@@ -341,12 +410,25 @@ class ReaderController(
                 items.put(
                     JSONObject().apply {
                         put("id", annotation.id)
+                        put("type", annotation.type.name)
+                        put("text", annotation.selectedText.orEmpty())
                         put("start", locatorJson(annotation.startLocator))
                         put("end", locatorJson(annotation.endLocator!!))
                     },
                 )
             }
         evaluate("window.qrApplyHighlights?.($items);")
+    }
+
+    private fun applyBookmarkState() {
+        val locator = currentLocator
+        val bookmarked = locator != null && annotations.any {
+            it.type == AnnotationType.BOOKMARK &&
+                it.spineIndex == spineIndex &&
+                it.startLocator.elementPath == locator.elementPath &&
+                it.startLocator.textOffset == locator.textOffset
+        }
+        evaluate("window.qrSetBookmarked?.($bookmarked);")
     }
 
     private fun locatorJson(locator: ReadingLocator) = JSONObject().apply {
@@ -358,6 +440,7 @@ class ReaderController(
     private fun handlePageChanged(newPage: Int, locator: ReadingLocator?) {
         page = newPage.coerceIn(0, pageCount - 1)
         currentLocator = locator
+        applyBookmarkState()
         val local = currentSpineProgress()
         val overall = overallProgress(local)
         onStateChanged(ReaderRenderState(spineIndex, page, pageCount, overall))
@@ -515,15 +598,40 @@ class ReaderController(
         ) = view.post {
             val start = ReadingLocator.create(startId, startPath, startOffset)
             val end = ReadingLocator.create(endId, endPath, endOffset)
-            onSelectionChanged(
-                if (start != null && end != null && text.isNotBlank()) {
+            currentSelection = if (start != null && end != null && text.isNotBlank()) {
                     ReadingSelection(spineIndex, start, end, text.take(20_000))
-                } else null,
-            )
+                } else null
+            onSelectionChanged(currentSelection)
         }
 
         @JavascriptInterface
-        fun selectionCleared() = view.post { onSelectionChanged(null) }
+        fun selectionCleared() = view.post {
+            currentSelection = null
+            onSelectionChanged(null)
+        }
+
+        @JavascriptInterface
+        fun highlightSelection() = view.post {
+            currentSelection?.let(onHighlightRequested)
+            clearSelection()
+        }
+
+        @JavascriptInterface
+        fun writeThought() = view.post {
+            currentSelection?.let(onThoughtRequested)
+            clearSelection()
+        }
+
+        @JavascriptInterface
+        fun deleteAnnotation(id: String) = view.post {
+            id.takeIf { it.isNotBlank() }?.let(onAnnotationDeleteRequested)
+        }
+
+        @JavascriptInterface
+        fun copyText(text: String) = view.post {
+            val clipboard = view.context.getSystemService(ClipboardManager::class.java)
+            clipboard?.setPrimaryClip(ClipData.newPlainText("QuietRead", text.take(20_000)))
+        }
 
         @JavascriptInterface
         fun turnPage(delta: Int) = view.post {
@@ -569,6 +677,66 @@ class ReaderController(
               const footnotePanel = document.getElementById('quietread-footnote-panel');
               const footnoteContent = document.getElementById('quietread-footnote-content');
               let lastFootnoteAnchor = null;
+              const selectionToolbar = document.createElement('div');
+              selectionToolbar.id = 'quietread-selection-toolbar';
+              selectionToolbar.setAttribute('role', 'toolbar');
+              selectionToolbar.setAttribute('aria-label', '文本操作');
+              selectionToolbar.innerHTML = `
+                <button type="button" data-action="copy">复制</button>
+                <button type="button" data-action="highlight">划线</button>
+                <button type="button" data-action="thought">写想法</button>
+                <button type="button" data-action="delete">取消划线</button>`;
+              document.documentElement.appendChild(selectionToolbar);
+              const pullIndicator = document.createElement('div');
+              pullIndicator.id = 'quietread-bookmark-pull-indicator';
+              pullIndicator.setAttribute('aria-hidden', 'true');
+              pullIndicator.textContent = '🔖';
+              document.documentElement.appendChild(pullIndicator);
+              window.qrSetBookmarked = (value) => {
+                pullIndicator.textContent = value ? '🔖−' : '🔖+';
+              };
+              let toolbarSelectionText = '';
+              let toolbarAnnotation = null;
+              let renderedHighlights = [];
+
+              const hideSelectionToolbar = () => {
+                selectionToolbar.removeAttribute('data-open');
+                toolbarSelectionText = '';
+                toolbarAnnotation = null;
+              };
+
+              const placeSelectionToolbar = (rect, mode) => {
+                selectionToolbar.querySelector('[data-action="highlight"]').style.display = mode === 'selection' ? '' : 'none';
+                selectionToolbar.querySelector('[data-action="thought"]').style.display = mode === 'selection' ? '' : 'none';
+                selectionToolbar.querySelector('[data-action="delete"]').style.display = mode === 'annotation' ? '' : 'none';
+                selectionToolbar.dataset.open = 'true';
+                selectionToolbar.style.visibility = 'hidden';
+                selectionToolbar.style.left = '0px';
+                selectionToolbar.style.top = '0px';
+                const width = selectionToolbar.offsetWidth;
+                const height = selectionToolbar.offsetHeight;
+                const center = rect.left + rect.width / 2;
+                const left = Math.max(8, Math.min(viewportWidth - width - 8, center - width / 2));
+                const above = rect.top - height - 10;
+                const top = above >= 8
+                  ? above
+                  : Math.min(viewportHeight - height - 8, rect.bottom + 10);
+                selectionToolbar.style.left = `${'$'}{Math.round(left)}px`;
+                selectionToolbar.style.top = `${'$'}{Math.max(8, Math.round(top))}px`;
+                selectionToolbar.style.visibility = 'visible';
+              };
+
+              selectionToolbar.addEventListener('pointerdown', (event) => event.preventDefault());
+              selectionToolbar.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const action = event.target && event.target.dataset && event.target.dataset.action;
+                if (action === 'copy') QuietRead.copyText(toolbarSelectionText);
+                else if (action === 'highlight') QuietRead.highlightSelection();
+                else if (action === 'thought') QuietRead.writeThought();
+                else if (action === 'delete' && toolbarAnnotation) QuietRead.deleteAnnotation(toolbarAnnotation.id);
+                hideSelectionToolbar();
+              }, true);
 
               const footnoteTarget = (anchor) => {
                 const href = anchor.getAttribute('href') || '';
@@ -684,7 +852,7 @@ class ReaderController(
 
               window.qrApplyHighlights = (items) => {
                 if (!window.CSS || !CSS.highlights || typeof Highlight === 'undefined') return;
-                const ranges = [];
+                renderedHighlights = [];
                 (Array.isArray(items) ? items : []).forEach((item) => {
                   const start = pointForLocator(item.start);
                   const end = pointForLocator(item.end);
@@ -693,12 +861,33 @@ class ReaderController(
                     const range = document.createRange();
                     range.setStart(start.node, start.offset);
                     range.setEnd(end.node, end.offset);
-                    if (!range.collapsed) ranges.push(range);
+                    if (!range.collapsed) renderedHighlights.push({
+                      id: String(item.id || ''),
+                      type: String(item.type || 'HIGHLIGHT'),
+                      text: String(item.text || range.toString()),
+                      range
+                    });
                   } catch (_) {}
                 });
                 CSS.highlights.delete('quietread-highlight');
-                if (ranges.length) CSS.highlights.set('quietread-highlight', new Highlight(...ranges));
+                if (renderedHighlights.length) {
+                  CSS.highlights.set(
+                    'quietread-highlight',
+                    new Highlight(...renderedHighlights.map((item) => item.range))
+                  );
+                }
               };
+
+              const visibleRangeRect = (range) => Array.from(range.getClientRects()).find((rect) =>
+                rect.right > 0 && rect.left < viewportWidth && rect.bottom > 0 && rect.top < viewportHeight &&
+                rect.width > 0 && rect.height > 0
+              );
+
+              const highlightAtPoint = (x, y) => renderedHighlights.find((item) =>
+                Array.from(item.range.getClientRects()).some((rect) =>
+                  x >= rect.left - 4 && x <= rect.right + 4 && y >= rect.top - 4 && y <= rect.bottom + 4
+                )
+              );
 
               let selectionTimer = 0;
               document.addEventListener('selectionchange', () => {
@@ -706,11 +895,13 @@ class ReaderController(
                 selectionTimer = window.setTimeout(() => {
                   const selection = window.getSelection();
                   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) {
+                    if (!toolbarAnnotation) hideSelectionToolbar();
                     QuietRead.selectionCleared();
                     return;
                   }
                   const range = selection.getRangeAt(0);
                   if (!flow.contains(range.startContainer) || !flow.contains(range.endContainer)) {
+                    hideSelectionToolbar();
                     QuietRead.selectionCleared();
                     return;
                   }
@@ -718,6 +909,7 @@ class ReaderController(
                   const end = selectionPoint(range.endContainer, range.endOffset);
                   const text = selection.toString();
                   if (!start || !end || !text.trim()) {
+                    hideSelectionToolbar();
                     QuietRead.selectionCleared();
                     return;
                   }
@@ -730,6 +922,12 @@ class ReaderController(
                     end.path,
                     end.offset
                   );
+                  const rect = visibleRangeRect(range);
+                  if (rect) {
+                    toolbarSelectionText = text;
+                    toolbarAnnotation = null;
+                    placeSelectionToolbar(rect, 'selection');
+                  }
                 }, 80);
               });
 
@@ -864,22 +1062,61 @@ class ReaderController(
                 const left = target.getBoundingClientRect().left + window.scrollX;
                 window.qrGoPage(Math.floor(left / viewportWidth));
               };
+              const bookmarkPullThreshold = () => Math.max(72, viewportHeight * 0.10);
+              const updateBookmarkPull = (distance) => {
+                const offset = Math.min(92, Math.max(0, distance) * 0.52);
+                const progress = Math.min(1, offset / (bookmarkPullThreshold() * 0.52));
+                const base = touchStart && touchStart.baseTransform ? `${'$'}{touchStart.baseTransform} ` : '';
+                flow.style.setProperty('transition', 'none', 'important');
+                flow.style.setProperty('transform', `${'$'}{base}translate3d(0, ${'$'}{offset}px, 0)`, 'important');
+                pullIndicator.style.setProperty('opacity', String(Math.min(1, progress * 1.25)), 'important');
+                pullIndicator.style.setProperty('transform', `scale(${'$'}{0.72 + progress * 0.34})`, 'important');
+              };
+              const resetBookmarkPull = (gesture) => {
+                const baseTransform = gesture && gesture.baseTransform ? gesture.baseTransform : '';
+                const baseTransition = gesture && gesture.baseTransition ? gesture.baseTransition : '';
+                flow.style.setProperty('transition', 'transform 190ms cubic-bezier(.2,.8,.2,1)', 'important');
+                flow.style.setProperty('transform', baseTransform || 'translate3d(0, 0, 0)', 'important');
+                pullIndicator.style.setProperty('opacity', '0', 'important');
+                pullIndicator.style.setProperty('transform', 'scale(0.72)', 'important');
+                window.setTimeout(() => {
+                  if (baseTransition) flow.style.setProperty('transition', baseTransition);
+                  else flow.style.removeProperty('transition');
+                  if (baseTransform) flow.style.setProperty('transform', baseTransform);
+                  else flow.style.removeProperty('transform');
+                }, 210);
+              };
               document.addEventListener('touchstart', (event) => {
                 const target = event.target;
                 if (event.touches.length !== 1 ||
-                    (target.closest && target.closest('#quietread-footnote-overlay'))) {
+                    (target.closest && target.closest('#quietread-footnote-overlay, #quietread-selection-toolbar'))) {
                   touchStart = null;
                   return;
                 }
                 const touch = event.touches[0];
-                touchStart = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+                touchStart = {
+                  x: touch.clientX,
+                  y: touch.clientY,
+                  time: Date.now(),
+                  pulling: false,
+                  baseTransform: flow.style.transform || '',
+                  baseTransition: flow.style.transition || ''
+                };
               }, { passive: true });
               document.addEventListener('touchmove', (event) => {
                 if (!touchStart || event.touches.length !== 1) return;
                 const touch = event.touches[0];
                 const dx = touch.clientX - touchStart.x;
                 const dy = touch.clientY - touchStart.y;
-                if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) event.preventDefault();
+                const liveSelection = window.getSelection();
+                if (liveSelection && !liveSelection.isCollapsed) return;
+                if (dy > 8 && Math.abs(dy) > Math.abs(dx) * 1.15) {
+                  event.preventDefault();
+                  touchStart.pulling = true;
+                  updateBookmarkPull(dy);
+                } else if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+                  event.preventDefault();
+                }
               }, { passive: false });
               document.addEventListener('touchend', (event) => {
                 if (!touchStart || event.changedTouches.length !== 1) {
@@ -891,24 +1128,52 @@ class ReaderController(
                 const dy = touch.clientY - touchStart.y;
                 const elapsed = Date.now() - touchStart.time;
                 const threshold = Math.max(48, viewportWidth * 0.12);
+                const gesture = touchStart;
                 touchStart = null;
+                if (gesture.pulling) resetBookmarkPull(gesture);
                 if (elapsed <= 900 && Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.2) {
                   event.preventDefault();
                   suppressClickUntil = Date.now() + 500;
                   QuietRead.turnPage(dx < 0 ? 1 : -1);
-                } else if (elapsed <= 900 && dy >= Math.max(72, viewportHeight * 0.10) && Math.abs(dy) > Math.abs(dx) * 1.2) {
+                } else if (elapsed <= 900 && dy >= bookmarkPullThreshold() && Math.abs(dy) > Math.abs(dx) * 1.2) {
                   event.preventDefault();
                   suppressClickUntil = Date.now() + 500;
                   QuietRead.toggleBookmark();
                 }
               }, { passive: false });
-              document.addEventListener('touchcancel', () => { touchStart = null; }, { passive: true });
+              document.addEventListener('touchcancel', () => {
+                const gesture = touchStart;
+                touchStart = null;
+                if (gesture && gesture.pulling) resetBookmarkPull(gesture);
+              }, { passive: true });
               document.addEventListener('click', (event) => {
+                const toolbar = event.target.closest && event.target.closest('#quietread-selection-toolbar');
+                if (toolbar) return;
                 if (Date.now() < suppressClickUntil) {
                   event.preventDefault();
                   event.stopPropagation();
                   return;
                 }
+                const liveSelection = window.getSelection();
+                if (liveSelection && !liveSelection.isCollapsed) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                const highlighted = highlightAtPoint(event.clientX, event.clientY);
+                if (highlighted) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toolbarSelectionText = highlighted.text;
+                  toolbarAnnotation = highlighted;
+                  const rect = Array.from(highlighted.range.getClientRects()).find((candidate) =>
+                    event.clientX >= candidate.left - 4 && event.clientX <= candidate.right + 4 &&
+                    event.clientY >= candidate.top - 4 && event.clientY <= candidate.bottom + 4
+                  ) || visibleRangeRect(highlighted.range);
+                  if (rect) placeSelectionToolbar(rect, 'annotation');
+                  return;
+                }
+                hideSelectionToolbar();
                 const overlay = event.target.closest && event.target.closest('#quietread-footnote-overlay');
                 if (overlay) {
                   event.preventDefault();
@@ -965,6 +1230,9 @@ fun EpubReaderView(
     onFootnoteOpened: () -> Unit,
     onBookmarkGesture: () -> Unit,
     onSelectionChanged: (ReadingSelection?) -> Unit,
+    onHighlightRequested: (ReadingSelection) -> Unit,
+    onThoughtRequested: (ReadingSelection) -> Unit,
+    onAnnotationDeleteRequested: (String) -> Unit,
     onPositionChanged: (ReadingPosition) -> Unit,
 ) {
     val controller = remember(epub) {
@@ -975,6 +1243,9 @@ fun EpubReaderView(
     controller.onFootnoteOpened = onFootnoteOpened
     controller.onBookmarkGesture = onBookmarkGesture
     controller.onSelectionChanged = onSelectionChanged
+    controller.onHighlightRequested = onHighlightRequested
+    controller.onThoughtRequested = onThoughtRequested
+    controller.onAnnotationDeleteRequested = onAnnotationDeleteRequested
     controller.onPositionChanged = onPositionChanged
     SideEffect { onController(controller) }
 

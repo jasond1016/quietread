@@ -24,7 +24,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -34,8 +33,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Bookmarks
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -103,7 +100,6 @@ fun ReaderScreen(
             ),
         )
     }
-    var selection by remember(book.id) { mutableStateOf<ReadingSelection?>(null) }
     var thoughtSelection by remember(book.id) { mutableStateOf<ReadingSelection?>(null) }
     var thoughtAnnotation by remember(book.id) { mutableStateOf<BookAnnotation?>(null) }
     var thoughtText by remember(book.id) { mutableStateOf("") }
@@ -149,9 +145,15 @@ fun ReaderScreen(
             onFootnoteOpened = { controlsVisible = false },
             onBookmarkGesture = { onToggleBookmark(currentPosition) },
             onSelectionChanged = {
-                selection = it
                 if (it != null) controlsVisible = false
             },
+            onHighlightRequested = onAddHighlight,
+            onThoughtRequested = {
+                thoughtSelection = it
+                thoughtAnnotation = null
+                thoughtText = ""
+            },
+            onAnnotationDeleteRequested = onDeleteAnnotation,
             onPositionChanged = {
                 currentPosition = it
                 onPositionChanged(it)
@@ -228,21 +230,6 @@ fun ReaderScreen(
                     IconButton(onClick = { showAnnotations = true }) {
                         Icon(Icons.Filled.Bookmarks, contentDescription = "标记", tint = foreground)
                     }
-                    val currentBookmark = currentPosition.locator?.let { locator ->
-                        annotations.any {
-                            it.type == AnnotationType.BOOKMARK &&
-                                it.spineIndex == currentPosition.spineIndex &&
-                                it.startLocator.elementPath == locator.elementPath &&
-                                it.startLocator.textOffset == locator.textOffset
-                        }
-                    } == true
-                    IconButton(onClick = { onToggleBookmark(currentPosition) }) {
-                        Icon(
-                            if (currentBookmark) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                            contentDescription = if (currentBookmark) "移除书签" else "添加书签",
-                            tint = foreground,
-                        )
-                    }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.FormatSize, contentDescription = "阅读设置", tint = foreground)
                     }
@@ -250,36 +237,6 @@ fun ReaderScreen(
             }
         }
 
-        selection?.let { selected ->
-            Surface(
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
-                tonalElevation = 8.dp,
-                shadowElevation = 8.dp,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(onClick = {
-                        onAddHighlight(selected)
-                        controller?.clearSelection()
-                        selection = null
-                    }) { Text("划线") }
-                    TextButton(onClick = {
-                        thoughtSelection = selected
-                        thoughtAnnotation = null
-                        thoughtText = ""
-                        controller?.clearSelection()
-                        selection = null
-                    }) { Text("写想法") }
-                    TextButton(onClick = {
-                        controller?.clearSelection()
-                        selection = null
-                    }) { Text("取消") }
-                }
-            }
-        }
     }
 
     if (showContents) {
