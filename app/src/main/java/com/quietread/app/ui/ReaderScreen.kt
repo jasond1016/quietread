@@ -58,7 +58,6 @@ import com.quietread.app.data.ReadingSelection
 import com.quietread.app.epub.EpubPackage
 import kotlin.math.roundToInt
 import com.quietread.app.epub.ReadingStats
-import com.quietread.app.epub.ReadingProgress
 import com.quietread.app.epub.BookSearch
 import com.quietread.app.epub.BookSearchResult
 import kotlinx.coroutines.Dispatchers
@@ -127,12 +126,7 @@ fun ReaderScreen(
         progress = renderState.overallProgress,
         totalReadingMs = book.totalReadingMs,
     )
-    val estimatedPage = ReadingProgress.estimatedBookPage(
-        weights = epub.spine.map { it.readingWeight },
-        spineIndex = renderState.spineIndex,
-        chapterPage = renderState.page,
-        chapterPageCount = renderState.pageCount,
-    )
+    val overallPercent = (renderState.overallProgress.coerceIn(0f, 1f) * 100).toInt()
 
     Box(Modifier.fillMaxSize().background(background)) {
         EpubReaderView(
@@ -200,7 +194,7 @@ fun ReaderScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "${(sliderProgress * 100).roundToInt()}%",
+                        "${(sliderProgress.coerceIn(0f, 1f) * 100).toInt()}%",
                         color = foreground,
                         style = MaterialTheme.typography.labelMedium,
                     )
@@ -211,7 +205,7 @@ fun ReaderScreen(
                         modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
                     )
                     Text(
-                        "${renderState.page + 1}/${renderState.pageCount}",
+                        "本章 ${renderState.page + 1} / ${renderState.pageCount}",
                         color = foreground.copy(alpha = 0.65f),
                         style = MaterialTheme.typography.labelMedium,
                     )
@@ -246,7 +240,7 @@ fun ReaderScreen(
 
         if (!controlsVisible) {
             Text(
-                text = "${estimatedPage.current} / ${estimatedPage.total}",
+                text = "$overallPercent%",
                 modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding()
                     .padding(end = 20.dp, bottom = 10.dp),
                 color = foreground.copy(alpha = 0.38f),

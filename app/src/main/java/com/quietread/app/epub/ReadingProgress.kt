@@ -1,13 +1,9 @@
 package com.quietread.app.epub
 
-import kotlin.math.roundToInt
-
 data class ProgressTarget(
     val spineIndex: Int,
     val spineProgress: Float,
 )
-
-data class EstimatedPage(val current: Int, val total: Int)
 
 object ReadingProgress {
     fun overall(weights: List<Long>, spineIndex: Int, spineProgress: Float): Float {
@@ -36,29 +32,4 @@ object ReadingProgress {
         }
         return ProgressTarget(safeWeights.lastIndex, 1f)
     }
-
-    fun estimatedBookPage(
-        weights: List<Long>,
-        spineIndex: Int,
-        chapterPage: Int,
-        chapterPageCount: Int,
-    ): EstimatedPage {
-        if (weights.isEmpty()) return EstimatedPage(1, 1)
-        val safeWeights = weights.map { it.coerceAtLeast(1L) }
-        val safeIndex = spineIndex.coerceIn(safeWeights.indices)
-        val safeChapterPages = chapterPageCount.coerceAtLeast(1)
-        val safePage = chapterPage.coerceIn(0, safeChapterPages - 1)
-        val weightPerPage = (safeWeights[safeIndex].toDouble() / safeChapterPages)
-            .coerceIn(MIN_WEIGHT_PER_PAGE, MAX_WEIGHT_PER_PAGE)
-        val beforePages = (safeWeights.take(safeIndex).sum() / weightPerPage).roundToInt()
-        val afterPages = (safeWeights.drop(safeIndex + 1).sum() / weightPerPage).roundToInt()
-        val total = (beforePages + safeChapterPages + afterPages).coerceAtLeast(1)
-        return EstimatedPage(
-            current = (beforePages + safePage + 1).coerceIn(1, total),
-            total = total,
-        )
-    }
-
-    private const val MIN_WEIGHT_PER_PAGE = 120.0
-    private const val MAX_WEIGHT_PER_PAGE = 3_000.0
 }
